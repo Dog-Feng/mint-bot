@@ -1,0 +1,1517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mint Engine Console</title>
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0c0e12;
+      --bg-2: #12151c;
+      --bg-3: #181c26;
+      --line: #2a3140;
+      --text: #e8edf5;
+      --muted: #8b95a8;
+      --dim: #5d6678;
+      --accent: #d7a14a;
+      --accent-2: #3d9d86;
+      --danger: #d46565;
+      --warn: #d4a017;
+      --ok: #4caf82;
+      --info: #6ea8d6;
+      --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      font: 13px/1.45 "Noto Sans SC", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 500px at 10% -10%, rgba(215, 161, 74, 0.08), transparent 50%),
+        radial-gradient(900px 400px at 100% 0%, rgba(61, 157, 134, 0.06), transparent 45%),
+        var(--bg);
+    }
+
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 56px 1fr;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(12, 14, 18, 0.92);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .mark {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #8a6230);
+      display: grid; place-items: center; font-weight: 700; color: #1a1206;
+    }
+    .brand h1 { margin: 0; font-size: 15px; letter-spacing: 0.04em; }
+    .brand p { margin: 0; color: var(--muted); font-size: 11px; }
+
+    .header-meta { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+    .pill {
+      padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line);
+      background: var(--bg-3); font-size: 11px; color: var(--muted);
+    }
+    .pill.ok { color: var(--ok); border-color: #2d5b45; }
+    .pill.warn { color: var(--warn); border-color: #5b4a1c; }
+    .pill.danger { color: var(--danger); border-color: #5b2d2d; }
+    .pill.info { color: var(--info); border-color: #2d4a5b; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 720px 1fr;
+      min-height: 0;
+    }
+
+    .panel {
+      min-height: 0;
+    }
+    .panel.left {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--line);
+      background: rgba(18, 21, 28, 0.92);
+    }
+    .left-scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 16px 16px 8px;
+    }
+    .panel.right {
+      overflow: auto;
+      padding: 16px;
+      display: grid;
+      grid-template-rows: auto auto auto 1fr;
+      gap: 12px;
+    }
+
+    .section {
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow);
+    }
+    .section h2 {
+      margin: 0 0 12px;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+
+    .row { display: grid; gap: 8px; margin-bottom: 10px; }
+    .row.two { grid-template-columns: 1fr 1fr; }
+    .row.three { grid-template-columns: 1fr 1fr 1fr; }
+    .row:last-child { margin-bottom: 0; }
+
+    label { color: var(--muted); font-size: 11px; }
+    input, select, textarea {
+      width: 100%;
+      margin-top: 4px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: inherit;
+      outline: none;
+    }
+    textarea { resize: vertical; min-height: 84px; font-family: Consolas, "Courier New", monospace; }
+    input:focus, select:focus, textarea:focus { border-color: #6b542c; }
+    input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-allowed; background: var(--bg-3); }
+
+    .hint { color: var(--dim); font-size: 11px; margin-top: 4px; }
+    .section-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      flex-shrink: 0;
+      padding: 12px 16px 16px;
+      border-top: 1px solid var(--line);
+      background: #12151c;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: 12px/1 "Noto Sans SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+      cursor: pointer;
+    }
+    .btn-ghost {
+      background: var(--bg-3);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .btn-primary { background: var(--accent); color: #1a1206; font-weight: 700; }
+    .btn-ok { background: var(--accent-2); color: #062019; font-weight: 700; }
+    .btn-danger { background: #6d2f2f; color: #ffd8d8; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .status { font-weight: 500; }
+    .status.ok { color: var(--ok); }
+    .status.warn { color: var(--warn); }
+    .status.err { color: var(--danger); }
+    .status.info { color: var(--info); }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .gas-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .gas-grid .kpi strong { font-size: 15px; }
+    .gas-meta { margin-top: 10px; color: var(--muted); font-size: 11px; }
+    .kpi {
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .kpi span { display: block; color: var(--muted); font-size: 11px; }
+    .kpi strong { display: block; margin-top: 4px; font-size: 16px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; }
+    tr:last-child td { border-bottom: 0; }
+    .mono { font-family: Consolas, "Courier New", monospace; word-break: break-all; }
+
+    .report {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .kv { display: grid; grid-template-columns: 92px 1fr; gap: 6px 10px; font-size: 12px; }
+    .kv b { color: var(--muted); font-weight: 500; }
+    .gap { color: var(--warn); }
+
+    .log {
+      min-height: 180px;
+      max-height: 260px;
+      overflow: auto;
+      background: #0a0c10;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      font: 12px/1.6 Consolas, "Courier New", monospace;
+      color: #b7c0ce;
+    }
+    .log .t { color: var(--dim); }
+    .log .ok { color: var(--ok); }
+    .log .warn { color: var(--warn); }
+    .log .err { color: var(--danger); }
+
+    .empty {
+      color: var(--dim);
+      padding: 18px 8px;
+      text-align: center;
+    }
+    .hidden { display: none; }
+
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .panel.left { border-right: 0; border-bottom: 1px solid var(--line); }
+      .kpis, .report, .gas-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="mark">M</div>
+        <div>
+          <h1>Mint Engine Console</h1>
+          <p>公网控制台 · 端口 8056 · 无需登录</p>
+        </div>
+      </div>
+      <div class="header-meta">
+        <span class="pill" id="phasePill">未检测</span>
+        <span class="pill" id="capPill">能力等级 --</span>
+        <span class="pill" id="runPill">空闲</span>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="panel left">
+        <div class="left-scroll">
+        <div class="section">
+          <h2>运行环境</h2>
+          <div class="row two">
+            <div>
+              <label>链</label>
+              <select id="chain">
+                <option value="1">Ethereum</option>
+                <option value="8453" selected>Base</option>
+                <option value="42161">Arbitrum One</option>
+                <option value="10">Optimism</option>
+                <option value="56">BSC</option>
+                <option value="137">Polygon</option>
+                <option value="4663">Robinhood Chain</option>
+              </select>
+            </div>
+            <div>
+              <label>Chain ID</label>
+              <input id="chainId" value="8453" disabled />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>自有 RPC（每行一个，可选）</label>
+              <textarea id="rpcs" placeholder="https://your-private-rpc.example"></textarea>
+              <div class="hint">只用于分析、Dry Run 和广播。环境检测与实时 Gas 使用链上默认公开节点，不会打这里的地址。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>钱包</h2>
+          <div class="row">
+            <div>
+              <label>钱包私钥（每行一个）</label>
+              <textarea id="wallets" placeholder="# 每行一个私钥，# 开头为注释
+0x你的私钥1
+0x你的私钥2"></textarea>
+              <div class="hint">只填私钥，不要填地址。运行表只显示 wallet_1 / wallet_2，不会回显私钥。</div>
+            </div>
+          </div>
+          <div class="row two">
+            <div>
+              <label>并发数</label>
+              <input id="concurrency" type="number" min="1" value="5" />
+            </div>
+            <div>
+              <label>售罄后</label>
+              <select id="stopOnSoldOut">
+                <option value="true" selected>停止未广播钱包</option>
+                <option value="false">继续发送剩余钱包</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Mint 参数</h2>
+          <div class="row">
+            <div>
+              <label>OpenSea 链接（可选，会自动填链和合约）</label>
+              <input id="openseaUrl" placeholder="https://opensea.io/collection/qft-quantum-echoes" />
+              <div class="hint">需要后端 + OPENSEA_API_KEY。解析后覆盖当前链和合约地址。</div>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>合约地址</label>
+              <input id="contract" placeholder="0x..." />
+            </div>
+          </div>
+          <div class="row two">
+            <div>
+              <label>数量</label>
+              <input id="quantity" type="number" min="1" value="1" />
+            </div>
+            <div>
+              <label>接收地址</label>
+              <select id="recipientMode">
+                <option value="self" selected>每个钱包自己</option>
+                <option value="custom">统一指定</option>
+              </select>
+            </div>
+          </div>
+          <div class="row hidden" id="recipientRow">
+            <div>
+              <label>统一接收地址</label>
+              <input id="recipient" placeholder="0x..." />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>feeRecipient（可选，SeaDrop 未填则自动取第一项）</label>
+              <input id="feeRecipient" placeholder="0x..." />
+            </div>
+          </div>
+          <div class="row two">
+            <div>
+              <label>ABI 来源</label>
+              <select id="abiSource">
+                <option value="auto" selected>自动获取（浏览器 / 缓存）</option>
+                <option value="manual">手动粘贴 JSON ABI</option>
+              </select>
+            </div>
+            <div>
+              <label>手动 ABI 状态</label>
+              <input id="abiStatus" value="未填写，将自动获取" disabled />
+            </div>
+          </div>
+          <div class="row" id="abiRow">
+            <div>
+              <label>合约 ABI（JSON，可选）</label>
+              <textarea id="abiJson" placeholder='[{"type":"function","name":"mint","inputs":[{"name":"quantity","type":"uint256"}],"stateMutability":"payable"}]'></textarea>
+              <div class="hint">填写后优先级最高。适合未验证合约，或自动获取失败时从 Etherscan / 项目方文档粘贴。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Gas 与启动</h2>
+          <div class="row three">
+            <div>
+              <label>额外 tip (gwei)</label>
+              <input id="extraTip" type="number" step="0.1" value="1" />
+            </div>
+            <div>
+              <label>maxFee 倍率</label>
+              <input id="feeMul" type="number" step="0.1" value="1" />
+            </div>
+            <div>
+              <label>重试次数</label>
+              <input id="maxRetries" type="number" min="0" max="10" step="1" value="3" />
+            </div>
+          </div>
+          <div class="hint" id="gasHint">交易前对这一笔做 estimateGas，再加 20%。Robinhood 上 tip 和倍率锁定为 0，走链上最低价。重试次数仍可改。</div>
+          <div class="row two">
+            <div>
+              <label>启动策略</label>
+              <select id="startStrategy">
+                <option value="immediate">立即启动</option>
+                <option value="scheduled" selected>到点抢跑</option>
+              </select>
+            </div>
+            <div>
+              <label>开售时间（本地）</label>
+              <input id="startTime" type="datetime-local" />
+            </div>
+          </div>
+          <div class="hint" id="feeHint">单钱包预估将在检测后计算。</div>
+        </div>
+
+        <div class="section">
+          <h2>归集 NFT</h2>
+          <div class="hint">把各 mint 钱包里的 NFT 转到一个出售地址。链、RPC、源钱包私钥、Gas 都沿用上面的配置，这里只补归集专用项。</div>
+          <div class="row">
+            <div>
+              <label>NFT 合约</label>
+              <input id="sweepContract" placeholder="默认使用上方 Mint 合约" />
+              <div class="hint">一般就是刚 mint 的合约。SeaDrop 等若 token 合约不同，在这里改。</div>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>归集目标地址</label>
+              <input id="sweepDest" placeholder="0x 你的出售钱包" />
+              <div class="hint" id="sweepDestHint">到账后用这个钱包连 OpenSea 挂单。必须是你能导入的普通地址，不要填合约。</div>
+            </div>
+          </div>
+          <div class="row two">
+            <div>
+              <label>转出范围</label>
+              <select id="sweepMode">
+                <option value="scan" selected>链上扫描该合约持仓</option>
+                <option value="last_mint">本次 mint 结果</option>
+                <option value="manual">手动 token ID</option>
+              </select>
+            </div>
+            <div>
+              <label>标准</label>
+              <select id="sweepStandard">
+                <option value="auto" selected>自动（分析合约后）</option>
+                <option value="erc721">ERC-721</option>
+                <option value="erc1155">ERC-1155</option>
+              </select>
+            </div>
+          </div>
+          <div class="row hidden" id="sweepTokenRow">
+            <div>
+              <label>Token ID（逗号或换行）</label>
+              <textarea id="sweepTokenIds" placeholder="1, 2, 3"></textarea>
+              <div class="hint">只转这些 ID。每个源钱包若不是 owner 会跳过。</div>
+            </div>
+          </div>
+          <div class="row two">
+            <div>
+              <label>归集并发</label>
+              <input id="sweepConcurrency" type="number" min="1" max="8" value="2" />
+              <div class="hint">不同源钱包可并行。同一钱包多枚 NFT 会串行，避免 nonce 冲突。</div>
+            </div>
+            <div>
+              <label>每钱包最多转出</label>
+              <input id="sweepMaxPerWallet" type="number" min="0" value="0" />
+              <div class="hint">0 表示该钱包下范围内的全部。用于只转一部分。</div>
+            </div>
+          </div>
+          <div class="section-actions">
+            <button class="btn-ghost" id="btnSweepUseMint" type="button">填入当前 Mint 合约</button>
+            <button class="btn-ghost" id="btnSweepPreview" type="button">预览持仓</button>
+            <button class="btn-primary" id="btnSweepRun" type="button" disabled>确认归集</button>
+            <button class="btn-danger" id="btnSweepStop" type="button" disabled>停止归集</button>
+          </div>
+        </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn-ghost" id="btnProbe">检测环境</button>
+          <button class="btn-ghost" id="btnInspect">分析合约</button>
+          <button class="btn-ghost" id="btnDryRun" disabled>Dry Run</button>
+          <button class="btn-primary" id="btnStart" disabled>启动</button>
+          <button class="btn-danger" id="btnStop" disabled>停止</button>
+          <button class="btn-ghost" id="btnFill">填充示例</button>
+          <button class="btn-ghost" id="btnResolveOpenSea">解析 OpenSea</button>
+        </div>
+      </aside>
+
+      <main class="panel right">
+        <div class="kpis">
+          <div class="kpi"><span>主 RPC</span><strong id="kpiRpc">--</strong></div>
+          <div class="kpi"><span>可用钱包</span><strong id="kpiWallet">--</strong></div>
+          <div class="kpi"><span>单价 / 应付</span><strong id="kpiPrice">--</strong></div>
+          <div class="kpi"><span>销售状态</span><strong id="kpiSale">--</strong></div>
+        </div>
+
+        <div class="section">
+          <h2>RPC 测速</h2>
+          <div id="rpcTable"><div class="empty">点击「检测环境」，并行探测延迟、高度和 chain_id。</div></div>
+        </div>
+
+        <div class="section">
+          <h2>当前 Gas <span id="gasLiveTag" class="pill">未检测</span></h2>
+          <div id="gasBox"><div class="empty">环境检测通过后，将每 4 秒刷新当前链的 baseFee / 小费 / 本次报价。</div></div>
+        </div>
+
+        <div class="section">
+          <h2>归集预览 <span id="sweepTag" class="pill">未预览</span></h2>
+          <div id="sweepBox"><div class="empty">选好转出范围后点「预览持仓」。链上扫描会查各源钱包在该 NFT 合约下的持仓。</div></div>
+        </div>
+
+        <div class="report">
+          <div class="section">
+            <h2>合约分析</h2>
+            <div id="inspectBox"><div class="empty">环境通过后，点击「分析合约」。</div></div>
+          </div>
+          <div class="section">
+            <h2>钱包准备</h2>
+            <div id="walletBox"><div class="empty">尚未检测钱包余额与 nonce。</div></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>运行日志</h2>
+          <div class="log" id="log">
+            <div><span class="t">[ready]</span> 控制台已加载，正在连接后端…</div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      probed: false,
+      inspected: false,
+      dryRan: false,
+      running: false,
+      report: null,
+      abort: null,
+      heartbeat: null,
+      gasTimer: null,
+      gasLive: null,
+      gasRpcUrls: [],
+      mintResults: [],
+      sweepPreviewed: false,
+      sweeping: false,
+    };
+
+    const CHAINS = {
+      1: { name: "Ethereum", symbol: "ETH", public_rpc: "https://1rpc.io/eth", public_rpcs: ["https://1rpc.io/eth", "https://ethereum.publicnode.com", "https://cloudflare-eth.com"] },
+      8453: { name: "Base", symbol: "ETH", public_rpc: "https://mainnet.base.org", public_rpcs: ["https://mainnet.base.org", "https://base.publicnode.com", "https://1rpc.io/base"] },
+      42161: { name: "Arbitrum One", symbol: "ETH", public_rpc: "https://arb1.arbitrum.io/rpc", public_rpcs: ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one.publicnode.com", "https://1rpc.io/arb"] },
+      10: { name: "Optimism", symbol: "ETH", public_rpc: "https://mainnet.optimism.io", public_rpcs: ["https://mainnet.optimism.io", "https://optimism.publicnode.com", "https://1rpc.io/op"] },
+      56: { name: "BSC", symbol: "BNB", public_rpc: "https://bsc-dataseed.binance.org", public_rpcs: ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com", "https://1rpc.io/bnb"] },
+      137: { name: "Polygon", symbol: "POL", public_rpc: "https://polygon-rpc.com", public_rpcs: ["https://polygon-rpc.com", "https://polygon-bor.publicnode.com", "https://1rpc.io/matic"] },
+      4663: { name: "Robinhood Chain", symbol: "ETH", public_rpc: "https://rpc.mainnet.chain.robinhood.com", public_rpcs: ["https://rpc.mainnet.chain.robinhood.com"], has_public_mempool: false },
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[ch]));
+    }
+
+    function log(msg, cls = "") {
+      const line = document.createElement("div");
+      const now = new Date().toLocaleTimeString();
+      line.innerHTML = `<span class="t">[${now}]</span> <span class="${cls}">${escapeHtml(msg)}</span>`;
+      $("log").appendChild(line);
+      $("log").scrollTop = $("log").scrollHeight;
+    }
+
+    function setPill(id, text, cls) {
+      $(id).textContent = text;
+      $(id).className = "pill " + (cls || "");
+    }
+
+    function parseLines(text) {
+      return text.split(/\r?\n/).map((x) => x.trim()).filter((x) => x && !x.startsWith("#"));
+    }
+
+    function pad(n) {
+      return String(n).padStart(2, "0");
+    }
+
+    function toLocalInput(unixOrIso) {
+      if (unixOrIso == null || unixOrIso === "") return "";
+      const date = typeof unixOrIso === "number" || /^[0-9]+$/.test(String(unixOrIso))
+        ? new Date(Number(unixOrIso) * (String(unixOrIso).length > 10 ? 1 : 1000))
+        : new Date(unixOrIso);
+      if (Number.isNaN(date.getTime())) return "";
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    function formatLocal(unix) {
+      if (!unix) return "--";
+      return new Date(unix * 1000).toLocaleString();
+    }
+
+    function formatEth(wei) {
+      if (wei == null) return "--";
+      const n = Number(wei) / 1e18;
+      if (!Number.isFinite(n)) return String(wei);
+      if (n === 0) return "0";
+      if (n < 0.000001) return n.toExponential(2);
+      return n.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+    }
+
+    function statusClass(status) {
+      const ok = new Set(["HEALTHY", "READY", "SUCCESS", "AUTO", "ACTIVE", "ok"]);
+      const warn = new Set(["DEGRADED", "NOT_STARTED", "SEMI_AUTO", "TIMEOUT", "CHECKING", "PAUSED", "SKIP", "WAIT"]);
+      if (ok.has(status)) return "ok";
+      if (warn.has(status)) return "warn";
+      return "err";
+    }
+
+    function errorMessage(data, fallback) {
+      const detail = data && data.detail;
+      if (!detail) return fallback;
+      if (typeof detail === "string") return detail;
+      if (detail.message) return detail.message;
+      if (Array.isArray(detail)) {
+        return detail.map((item) => item.msg || JSON.stringify(item)).join("; ");
+      }
+      return JSON.stringify(detail);
+    }
+
+    function parseManualAbi() {
+      const raw = $("abiJson").value.trim();
+      if (!raw) return { ok: true, abi: null, functions: [], error: "" };
+      try {
+        const parsed = JSON.parse(raw);
+        const abi = Array.isArray(parsed) ? parsed : parsed.abi;
+        if (!Array.isArray(abi)) return { ok: false, abi: null, functions: [], error: "ABI 必须是 JSON 数组，或包含 abi 字段的对象。" };
+        const functions = abi.filter((x) => x && x.type === "function");
+        return { ok: true, abi, functions, error: "" };
+      } catch (err) {
+        return { ok: false, abi: null, functions: [], error: "ABI JSON 无法解析。" };
+      }
+    }
+
+    function refreshAbiStatus() {
+      const source = $("abiSource").value;
+      const parsed = parseManualAbi();
+      if (source === "manual" && !parsed.abi) {
+        $("abiStatus").value = parsed.error || "请粘贴 ABI JSON";
+        return;
+      }
+      if (parsed.abi) {
+        const mintLike = parsed.functions.filter((f) => /mint|claim|purchase|buy|drop/i.test(f.name || "")).map((f) => f.name);
+        $("abiStatus").value = parsed.ok
+          ? `已解析 ${parsed.functions.length} 个函数` + (mintLike.length ? `，候选 ${mintLike.slice(0, 3).join(", ")}` : "")
+          : parsed.error;
+        return;
+      }
+      $("abiStatus").value = source === "auto" ? "未填写，将自动获取" : "请粘贴 ABI JSON";
+    }
+
+    function publicRpcUrls() {
+      const chain = CHAINS[$("chain").value] || {};
+      if (Array.isArray(chain.public_rpcs) && chain.public_rpcs.length) return chain.public_rpcs.slice();
+      return chain.public_rpc ? [chain.public_rpc] : [];
+    }
+
+    const GAS_FIELD_DEFAULTS = { extraTip: "1", feeMul: "1" };
+    const lastGasValues = { ...GAS_FIELD_DEFAULTS };
+
+    function isRobinhood() {
+      const id = Number($("chain").value);
+      const chain = CHAINS[id] || CHAINS[$("chain").value] || {};
+      return id === 4663 || chain.has_public_mempool === false;
+    }
+
+    function applyChainDefaults() {
+      $("chainId").value = $("chain").value;
+      syncGasFieldsForChain();
+    }
+
+    function syncGasFieldsForChain() {
+      const rh = isRobinhood();
+      ["extraTip", "feeMul"].forEach((id) => {
+        const el = $(id);
+        if (rh) {
+          if (!el.disabled) lastGasValues[id] = el.value || GAS_FIELD_DEFAULTS[id];
+          el.value = "0";
+          el.disabled = true;
+        } else {
+          const wasLocked = el.disabled;
+          el.disabled = false;
+          if (wasLocked || el.value === "0" || !el.value) {
+            el.value = lastGasValues[id] || GAS_FIELD_DEFAULTS[id];
+          }
+        }
+      });
+      $("gasHint").textContent = rh
+        ? "Robinhood 先到先得：额外 tip 和 maxFee 倍率已锁定为 0。交易用 estimateGas+20%，单价走链上当前最低值。重试次数仍生效。"
+        : "交易前对这一笔做 estimateGas，再加 20%。额外 tip / 倍率只作用于单价。重试按 1.5× tip、1.25× 倍率递增。";
+      if (state.gasLive) renderGas(state.gasLive);
+    }
+
+    function walletItems() {
+      return parseLines($("wallets").value).map((line, i) => {
+        const item = { label: `wallet_${i + 1}` };
+        const hex = line.startsWith("0x") ? line.slice(2) : line;
+        if (/^[0-9a-fA-F]{40}$/.test(hex)) item.address = "0x" + hex;
+        else item.private_key = line;
+        return item;
+      });
+    }
+
+    function buildConfig(mode, options = {}) {
+      const parsed = parseManualAbi();
+      if (!parsed.ok) throw new Error(parsed.error);
+      if ($("abiSource").value === "manual" && !parsed.abi) {
+        throw new Error("已选择手动 ABI，但尚未粘贴有效 JSON。");
+      }
+      const contract = $("contract").value.trim();
+      const openseaUrl = options.skipOpenSea ? "" : $("openseaUrl").value.trim();
+      if (!contract && !openseaUrl) {
+        throw new Error("请填写合约地址或 OpenSea 链接。");
+      }
+      const extra = {};
+      const feeRecipient = $("feeRecipient").value.trim();
+      if (feeRecipient) extra.feeRecipient = feeRecipient;
+      const startLocal = $("startTime").value;
+      return {
+        run: {
+          name: "console",
+          mode,
+          start_strategy: $("startStrategy").value,
+        },
+        chain: { chain_id: Number($("chain").value) },
+        rpc: {
+          urls: options.publicProbe ? [] : parseLines($("rpcs").value),
+          selection: "auto",
+          probe_timeout_ms: 4000,
+        },
+        wallets: {
+          source: "pasted",
+          items: walletItems(),
+          concurrency: Number($("concurrency").value || 5),
+          stop_on_sold_out: $("stopOnSoldOut").value === "true",
+        },
+        mint: {
+          contract: contract || null,
+          opensea_url: openseaUrl || null,
+          quantity: Number($("quantity").value || 1),
+          recipient_mode: $("recipientMode").value,
+          recipient: $("recipient").value.trim() || null,
+          abi: {
+            source: $("abiSource").value,
+            json: parsed.abi,
+          },
+          extra_params: extra,
+        },
+        gas: currentGasConfig(),
+        schedule: {
+          start_time_unix: startLocal ? Math.floor(new Date(startLocal).getTime() / 1000) : null,
+        },
+      };
+    }
+
+    async function api(path, body, options = {}) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      });
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (err) {
+        data = null;
+      }
+      if (!response.ok) {
+        throw new Error(errorMessage(data, response.statusText || `HTTP ${response.status}`));
+      }
+      return data;
+    }
+
+    function renderRpc(rows) {
+      if (!rows || !rows.length) {
+        $("rpcTable").innerHTML = `<div class="empty">没有 RPC 探测结果。</div>`;
+        $("kpiRpc").textContent = "--";
+        return;
+      }
+      $("rpcTable").innerHTML = `
+        <table>
+          <thead><tr><th>RPC</th><th>延迟</th><th>高度</th><th>状态</th><th>角色</th></tr></thead>
+          <tbody>
+            ${rows.map((r) => `
+              <tr>
+                <td class="mono">${escapeHtml(r.url)}</td>
+                <td>${r.latency_ms != null ? r.latency_ms + "ms" : (r.error ? escapeHtml(r.error) : "timeout")}</td>
+                <td>${r.block_number != null ? r.block_number : "-"}</td>
+                <td class="status ${statusClass(r.status)}">${escapeHtml(r.status)}</td>
+                <td>${escapeHtml(r.role || "")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+      const primary = rows.find((r) => r.role === "主") || rows.find((r) => r.status === "HEALTHY" || r.status === "DEGRADED");
+      $("kpiRpc").textContent = primary && primary.latency_ms != null ? `${primary.latency_ms}ms` : "--";
+      state.gasRpcUrls = rows
+        .filter((r) => r.status === "HEALTHY" || r.status === "DEGRADED")
+        .sort((a, b) => (a.role === "主" ? -1 : b.role === "主" ? 1 : 0))
+        .map((r) => r.url);
+    }
+
+    function currentGasConfig() {
+      const retries = Math.floor(Number($("maxRetries").value));
+      return {
+        gas_limit_mode: "estimate_or_fallback",
+        max_retries: Number.isFinite(retries) ? Math.max(0, Math.min(10, retries)) : 0,
+        bump: {
+          mode: "extra_tip",
+          extra_priority_gwei: Number($("extraTip").value || 0),
+          max_fee_multiplier: Number($("feeMul").value || 0),
+          hard_cap_gwei: 0,
+        },
+      };
+    }
+
+    function formatGwei(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "--";
+      if (n === 0) return "0";
+      if (n < 0.001) return n.toExponential(2);
+      return String(Number(n.toFixed(4)));
+    }
+
+    function applyLocalGasBump(live) {
+      if (!live) return live;
+      const bump = currentGasConfig().bump;
+      const extra = Number(bump.extra_priority_gwei || 0);
+      const mul = Number(bump.max_fee_multiplier) > 0 ? Number(bump.max_fee_multiplier) : 1;
+      const priority = Number(live.network_tip_gwei || 0) + extra;
+      const maxFee = Number(live.base_fee_gwei || 0) * mul + priority;
+      return {
+        ...live,
+        priority_fee_gwei: priority,
+        max_fee_gwei: maxFee,
+        over_cap: false,
+      };
+    }
+
+    function renderGas(data, opts = {}) {
+      if (!data) {
+        $("gasBox").innerHTML = `<div class="empty">暂时读不到 gas，将继续重试。</div>`;
+        setPill("gasLiveTag", "读取失败", "danger");
+        return;
+      }
+      const live = applyLocalGasBump(data);
+      state.gasLive = { ...data, ...live };
+      const updated = new Date().toLocaleTimeString();
+      const retries = currentGasConfig().max_retries;
+      $("gasBox").innerHTML = `
+        <div class="gas-grid">
+          <div class="kpi"><span>Base Fee</span><strong>${escapeHtml(formatGwei(live.base_fee_gwei))} gwei</strong></div>
+          <div class="kpi"><span>网络建议 tip</span><strong>${escapeHtml(formatGwei(live.network_tip_gwei))} gwei</strong></div>
+          <div class="kpi"><span>本次小费</span><strong>${escapeHtml(formatGwei(live.priority_fee_gwei))} gwei</strong></div>
+          <div class="kpi"><span>本次 maxFee</span><strong>${escapeHtml(formatGwei(live.max_fee_gwei))} gwei</strong></div>
+        </div>
+        <div class="gas-meta">
+          失败后最多重试 ${retries} 次 · 交易 gasLimit = 现场 estimateGas+20% ·
+          更新于 ${escapeHtml(updated)}
+        </div>
+      `;
+      setPill("gasLiveTag", opts.stale ? "刷新中" : "实时", opts.stale ? "warn" : "ok");
+    }
+
+    function stopGasWatch() {
+      if (state.gasTimer) {
+        clearInterval(state.gasTimer);
+        state.gasTimer = null;
+      }
+    }
+
+    async function refreshGas(first) {
+      const payload = {
+        chain_id: Number($("chain").value),
+        rpc_urls: state.gasRpcUrls.length ? state.gasRpcUrls : publicRpcUrls(),
+        gas: currentGasConfig(),
+      };
+      try {
+        const data = await api("/api/gas/quote", payload);
+        const prev = state.gasLive;
+        renderGas(data);
+        if (first) {
+          log(`当前 gas：base ${formatGwei(data.base_fee_gwei)} / 建议 tip ${formatGwei(data.network_tip_gwei)} / maxFee ${formatGwei(state.gasLive.max_fee_gwei)} gwei`, "ok");
+        } else if (prev && Math.abs(Number(data.base_fee_gwei) - Number(prev.base_fee_gwei)) >= 0.5) {
+          log(`baseFee 变化 ${formatGwei(prev.base_fee_gwei)} → ${formatGwei(data.base_fee_gwei)} gwei`);
+        }
+      } catch (err) {
+        if (state.gasLive) renderGas(state.gasLive, { stale: true });
+        else renderGas(null);
+        if (first) log(`读取 gas 失败：${err.message}`, "err");
+      }
+    }
+
+    function startGasWatch(immediate = true) {
+      stopGasWatch();
+      if (immediate) refreshGas(true);
+      state.gasTimer = setInterval(() => refreshGas(false), 4000);
+    }
+
+    function renderInspect(report) {
+      state.report = report;
+      const sale = report.sale || {};
+      const method = report.method;
+      const gaps = report.gaps || [];
+      const symbol = report.symbol || (CHAINS[report.chain_id] || {}).symbol || "ETH";
+      $("kpiPrice").textContent = `${formatEth(sale.price)} / ${formatEth(report.value)} ${symbol}`;
+      $("kpiSale").textContent = sale.status || "--";
+      const cap = report.capability || "--";
+      setPill("capPill", `能力等级 ${cap}`, statusClass(cap));
+      const gapText = gaps.length
+        ? gaps.map((g) => `${g.key}: ${g.message}`).join("；")
+        : "无";
+      const proxyText = report.is_proxy
+        ? `是${report.proxy_type ? " / " + report.proxy_type : ""}${report.implementation ? " → " + report.implementation : ""}`
+        : "否";
+      $("inspectBox").innerHTML = `
+        <div class="kv">
+          <b>名称</b><span>${escapeHtml(report.contract_name || "--")} ${escapeHtml(report.symbol || "")}</span>
+          <b>类型</b><span>${escapeHtml(report.contract_type || "--")}</span>
+          <b>Proxy</b><span class="mono">${escapeHtml(proxyText)}</span>
+          <b>ABI 来源</b><span>${escapeHtml(report.abi_source || "--")}</span>
+          <b>ABI 函数</b><span>${report.abi_function_count || 0} 个</span>
+          <b>协议</b><span>${escapeHtml(report.protocol || "--")}</span>
+          <b>方法</b><span class="mono">${escapeHtml(method ? method.signature : "未识别")}</span>
+          <b>开始</b><span>${escapeHtml(formatLocal(sale.start_time))}</span>
+          <b>结束</b><span>${escapeHtml(formatLocal(sale.end_time))}</span>
+          <b>钱包上限</b><span>${sale.max_per_wallet != null ? sale.max_per_wallet : "--"}</span>
+          <b>剩余</b><span>${sale.remaining_supply != null ? sale.remaining_supply : "--"}</span>
+          <b>缺口</b><span class="${gaps.length ? "gap" : ""}">${escapeHtml(gapText)}</span>
+        </div>
+      `;
+      if (sale.start_time) $("startTime").value = toLocalInput(sale.start_time);
+      const walletCount = Math.max((report.wallets || []).length, walletItems().length, 1);
+      $("feeHint").textContent = `单钱包应付 ${formatEth(report.value)} ${symbol} + 现场 estimateGas+20% 的 gas；${walletCount} 个钱包按当前单价合计约 ${formatEth(report.value * walletCount)} ${symbol}（不含 gas）。`;
+      (report.notes || []).forEach((note) => log(note, "warn"));
+      renderWallets(report.wallets || [], "queued");
+    }
+
+    function renderWallets(wallets, phase) {
+      const rows = wallets.length ? wallets : walletItems().map((w) => ({
+        label: w.label,
+        address: "",
+        status: "CHECKING",
+        nonce: null,
+        note: null,
+      }));
+      const ready = rows.filter((w) => w.status === "READY").length;
+      $("kpiWallet").textContent = `${ready} / ${rows.length}`;
+      $("walletBox").innerHTML = `
+        <table>
+          <thead><tr><th>钱包</th><th>阶段</th><th>nonce</th><th>状态</th><th>token ids</th></tr></thead>
+          <tbody id="walletBody">
+            ${rows.map((w) => `
+              <tr data-status="${escapeHtml(w.status || "")}" data-address="${escapeHtml((w.address || "").toLowerCase())}">
+                <td>${escapeHtml(w.label || "wallet")}<div class="hint mono">${escapeHtml(w.address || "")}</div></td>
+                <td>${escapeHtml(phase || w.phase || "queued")}</td>
+                <td>${w.nonce != null ? w.nonce : "-"}</td>
+                <td class="status ${statusClass(w.status)}">${escapeHtml(w.status || "--")}</td>
+                <td>${escapeHtml(w.token_ids ? w.token_ids.join(", ") : (w.note || "-"))}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    function normalizeAddress(value) {
+      const raw = (value || "").trim();
+      if (!raw) return "";
+      const hex = raw.startsWith("0x") || raw.startsWith("0X") ? raw.slice(2) : raw;
+      if (!/^[0-9a-fA-F]{40}$/.test(hex)) return "";
+      return "0x" + hex;
+    }
+
+    function isAddress(value) {
+      return Boolean(normalizeAddress(value));
+    }
+
+    function sweepNftContract() {
+      return $("sweepContract").value.trim() || $("contract").value.trim();
+    }
+
+    function lastMintPayload() {
+      const map = {};
+      (state.mintResults || []).forEach((row) => {
+        if (!row.address || !row.token_ids || !row.token_ids.length) return;
+        map[String(row.address).toLowerCase()] = row.token_ids.map(String);
+      });
+      return map;
+    }
+
+    function buildSweepPayload(requireDest) {
+      const cfg = collectSweepConfig({ requireDest });
+      return {
+        chain_id: cfg.chain_id,
+        contract: cfg.contract,
+        destination: requireDest ? (cfg.destination || null) : null,
+        mode: cfg.mode,
+        token_ids: cfg.token_ids,
+        last_mint: lastMintPayload(),
+        standard: cfg.standard,
+        concurrency: cfg.concurrency,
+        max_per_wallet: cfg.max_per_wallet,
+        rpc_urls: parseLines($("rpcs").value),
+        wallets: walletItems().filter((w) => w.private_key),
+        gas: currentGasConfig(),
+      };
+    }
+
+    function collectSweepConfig(options = {}) {
+      const requireDest = options.requireDest !== false;
+      const dest = normalizeAddress($("sweepDest").value);
+      const contract = normalizeAddress(sweepNftContract()) || sweepNftContract();
+      const mode = $("sweepMode").value;
+      const tokenIds = parseLines($("sweepTokenIds").value)
+        .flatMap((line) => line.split(/[,\s]+/))
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (!contract) throw new Error("请填写 NFT 合约，或先填上方 Mint 合约。");
+      if (!isAddress(contract)) throw new Error("NFT 合约地址格式不对。");
+      if (requireDest && !dest) throw new Error("归集目标必须是 0x 开头的 40 位地址。");
+      if (mode === "manual" && !tokenIds.length) throw new Error("手动模式请填写 token ID。");
+      const sources = walletItems().filter((w) => w.private_key);
+      if (!sources.length) throw new Error("归集需要源钱包私钥。");
+      const destLower = dest.toLowerCase();
+      return {
+        chain_id: Number($("chain").value),
+        contract,
+        destination: dest,
+        mode,
+        token_ids: tokenIds,
+        standard: $("sweepStandard").value,
+        concurrency: Math.max(1, Number($("sweepConcurrency").value || 2)),
+        max_per_wallet: Math.max(0, Number($("sweepMaxPerWallet").value || 0)),
+        dest_is_source: sources.some((w) => (w.address || "").toLowerCase() === destLower),
+        wallets: sources.length,
+        gas: currentGasConfig(),
+      };
+    }
+
+    function renderSweepPreview(data) {
+      const warn = data.dest_is_source
+        ? `<div class="hint" style="color:var(--warn)">目标地址也在源钱包列表里。转给自己可以，但起不到归集效果。</div>`
+        : "";
+      const modeLabel = { last_mint: "本次 mint 结果", scan: "链上扫描持仓", manual: "手动 token ID" }[data.mode] || data.mode;
+      const rows = data.wallets || [];
+      const results = data.results || [];
+      const resultTable = results.length ? `
+        <table style="margin-top:12px">
+          <thead><tr><th>钱包</th><th>token</th><th>状态</th><th>tx</th></tr></thead>
+          <tbody>
+            ${results.map((r) => `
+              <tr>
+                <td>${escapeHtml(r.label || "")}<div class="hint mono">${escapeHtml(r.address || "")}</div></td>
+                <td>${escapeHtml(r.token_id != null ? String(r.token_id) : "-")}</td>
+                <td class="status ${statusClass(r.status)}">${escapeHtml(r.status || "--")}</td>
+                <td class="mono">${escapeHtml(r.tx_hash || r.error || "-")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      ` : "";
+      $("sweepBox").innerHTML = `
+        <div class="kv">
+          <b>链</b><span>${escapeHtml(String(data.chain_id || $("chain").value))}</span>
+          <b>NFT 合约</b><span class="mono">${escapeHtml(data.contract || "")}</span>
+          <b>目标地址</b><span class="mono">${escapeHtml(data.destination || "预览可不填，确认归集时再填")}</span>
+          <b>范围</b><span>${escapeHtml(modeLabel)} · ${escapeHtml(data.standard || "")} · 可转 ${data.ready ?? 0} / 跳过 ${data.skipped ?? 0}</span>
+        </div>
+        ${warn}
+        <table style="margin-top:10px">
+          <thead><tr><th>钱包</th><th>将转出</th><th>状态</th></tr></thead>
+          <tbody>
+            ${rows.map((r) => `
+              <tr>
+                <td>${escapeHtml(r.label || "wallet")}<div class="hint mono">${escapeHtml(r.address || "")}</div></td>
+                <td>${escapeHtml((r.token_ids && r.token_ids.length) ? r.token_ids.join(", ") : (r.note || "-"))}</td>
+                <td class="status ${statusClass(r.status)}">${escapeHtml(r.status || "--")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        ${resultTable}
+      `;
+      setPill("sweepTag", results.length ? "已归集" : "已预览", results.length ? "ok" : "ok");
+    }
+
+    async function previewSweep() {
+      const payload = buildSweepPayload(false);
+      const data = await api("/api/sweep/preview", payload);
+      renderSweepPreview(data);
+      state.sweepPreviewed = true;
+      syncSweepRunButton();
+      log(`归集预览：${data.contract} 可转 ${data.ready || 0} 个钱包，跳过 ${data.skipped || 0}。`, data.ready ? "ok" : "warn");
+      (data.events || []).forEach((line) => log(line));
+    }
+
+    function applyMintResults(results) {
+      state.mintResults = results || [];
+      const byAddress = new Map((results || []).map((row) => [(row.address || "").toLowerCase(), row]));
+      document.querySelectorAll("#walletBody tr").forEach((tr) => {
+        const row = byAddress.get(tr.dataset.address);
+        if (!row) return;
+        tr.dataset.status = row.status || "";
+        tr.children[1].textContent = row.status || "";
+        tr.children[3].textContent = row.status || "";
+        tr.children[3].className = "status " + statusClass(row.status);
+        tr.children[4].textContent = (row.token_ids && row.token_ids.length)
+          ? row.token_ids.join(", ")
+          : (row.error || row.tx_hash || "-");
+      });
+      const success = (results || []).filter((r) => r.status === "SUCCESS").length;
+      $("kpiWallet").textContent = `${success} / ${(results || []).length || walletItems().length}`;
+    }
+
+    function setBusy(busy) {
+      ["btnProbe", "btnInspect", "btnDryRun", "btnStart", "btnFill", "btnResolveOpenSea", "btnSweepPreview", "btnSweepUseMint"].forEach((id) => {
+        $(id).disabled = busy;
+      });
+      if (!busy) {
+        $("btnDryRun").disabled = !state.inspected;
+        $("btnStart").disabled = !state.dryRan || !walletItems().some((w) => w.private_key);
+        syncSweepRunButton();
+      } else {
+        $("btnSweepRun").disabled = true;
+      }
+      $("btnStop").disabled = !state.running;
+      $("btnSweepStop").disabled = !state.sweeping;
+    }
+
+    function clearHeartbeat() {
+      if (state.heartbeat) {
+        clearInterval(state.heartbeat);
+        state.heartbeat = null;
+      }
+    }
+
+    function applyOpenSea(data) {
+      $("openseaUrl").value = data.opensea.url;
+      $("contract").value = data.contract;
+      if (data.chain && data.chain.chain_id) {
+        const id = String(data.chain.chain_id);
+        if (![...$("chain").options].some((o) => o.value === id)) {
+          const opt = document.createElement("option");
+          opt.value = id;
+          opt.textContent = data.chain.name || id;
+          $("chain").appendChild(opt);
+        }
+        $("chain").value = id;
+        CHAINS[id] = {
+          ...(CHAINS[id] || {}),
+          name: data.chain.name || (CHAINS[id] && CHAINS[id].name) || id,
+          symbol: (CHAINS[id] && CHAINS[id].symbol) || "ETH",
+          public_rpc: data.chain.public_rpc || (CHAINS[id] && CHAINS[id].public_rpc),
+          public_rpcs: data.chain.public_rpcs || (CHAINS[id] && CHAINS[id].public_rpcs) || [],
+          has_public_mempool: data.chain.has_public_mempool ?? (CHAINS[id] && CHAINS[id].has_public_mempool),
+        };
+        applyChainDefaults();
+      }
+      const stage = data.opensea.next_stage;
+      if (stage && (stage.start_time || stage.startTime)) {
+        const local = toLocalInput(stage.start_time || stage.startTime);
+        if (local) $("startTime").value = local;
+      }
+    }
+
+    $("chain").addEventListener("change", () => {
+      applyChainDefaults();
+      const chain = CHAINS[$("chain").value] || {};
+      const publics = publicRpcUrls();
+      log(
+        isRobinhood()
+          ? `已选择 ${chain.name || "Robinhood"}：Gas 三项已锁定为 0，交易走链上最低价。`
+          : `已选择链 ${chain.name || $("chain").value} / chain_id=${$("chain").value}。测速将使用 ${publics.length} 个默认公开 RPC。`
+      );
+      if (state.probed) {
+        state.gasRpcUrls = publics;
+        startGasWatch();
+      }
+    });
+    ["extraTip", "feeMul", "maxRetries"].forEach((id) => {
+      $(id).addEventListener("input", () => {
+        if (state.gasLive) renderGas(state.gasLive);
+      });
+      $(id).addEventListener("change", () => {
+        if (state.gasLive) renderGas(state.gasLive);
+      });
+    });
+    $("abiSource").addEventListener("change", refreshAbiStatus);
+    $("abiJson").addEventListener("input", refreshAbiStatus);
+    $("recipientMode").addEventListener("change", () => {
+      $("recipientRow").classList.toggle("hidden", $("recipientMode").value !== "custom");
+    });
+    function syncSweepRunButton() {
+      $("btnSweepRun").disabled = !state.sweepPreviewed || state.sweeping || !normalizeAddress($("sweepDest").value);
+    }
+
+    $("sweepMode").addEventListener("change", () => {
+      $("sweepTokenRow").classList.toggle("hidden", $("sweepMode").value !== "manual");
+    });
+    ["sweepContract", "sweepMode", "sweepTokenIds", "sweepStandard", "sweepConcurrency", "sweepMaxPerWallet"].forEach((id) => {
+      $(id).addEventListener("input", () => {
+        state.sweepPreviewed = false;
+        syncSweepRunButton();
+      });
+      $(id).addEventListener("change", () => {
+        state.sweepPreviewed = false;
+        syncSweepRunButton();
+      });
+    });
+    $("sweepDest").addEventListener("input", syncSweepRunButton);
+    $("sweepDest").addEventListener("change", syncSweepRunButton);
+    $("btnSweepUseMint").onclick = () => {
+      const contract = $("contract").value.trim();
+      if (!contract) return log("上方还没有 Mint 合约。", "err");
+      $("sweepContract").value = contract;
+      log(`已填入当前 Mint 合约 ${contract}`);
+    };
+    $("btnSweepPreview").onclick = async () => {
+      setBusy(true);
+      setPill("sweepTag", "预览中", "warn");
+      try {
+        await previewSweep();
+      } catch (err) {
+        state.sweepPreviewed = false;
+        syncSweepRunButton();
+        setPill("sweepTag", "预览失败", "danger");
+        log(`归集预览失败：${err.message}`, "err");
+      } finally {
+        setBusy(false);
+      }
+    };
+    $("btnSweepRun").onclick = async () => {
+      if (!state.sweepPreviewed) return log("请先预览持仓。", "err");
+      let payload;
+      try {
+        payload = buildSweepPayload(true);
+      } catch (err) {
+        return log(err.message, "err");
+      }
+      state.sweeping = true;
+      state.abort = new AbortController();
+      setBusy(true);
+      setPill("sweepTag", "归集中", "warn");
+      log(`开始归集：${payload.contract} → ${payload.destination}`, "ok");
+      try {
+        const data = await api("/api/sweep/run", payload, { signal: state.abort.signal });
+        renderSweepPreview(data);
+        const ok = data.success || 0;
+        const failed = data.failed || 0;
+        log(`归集结束：成功 ${ok}，失败 ${failed}。`, failed ? "warn" : "ok");
+        (data.events || []).slice(-20).forEach((line) => log(line));
+        setPill("sweepTag", failed ? "部分失败" : "已归集", failed ? "warn" : "ok");
+      } catch (err) {
+        if (err.name === "AbortError") log("已停止等待归集请求。已发出的转账无法撤销。", "warn");
+        else log(`归集失败：${err.message}`, "err");
+        setPill("sweepTag", "归集失败", "danger");
+      } finally {
+        state.sweeping = false;
+        state.abort = null;
+        setBusy(false);
+      }
+    };
+    $("btnSweepStop").onclick = () => {
+      if (state.abort) state.abort.abort();
+      state.sweeping = false;
+      $("btnSweepStop").disabled = true;
+      log("已请求停止归集。无法撤销已经发出的转账。", "warn");
+    };
+
+    $("btnResolveOpenSea").onclick = async () => {
+      const url = $("openseaUrl").value.trim() || $("contract").value.trim();
+      if (!url) return log("请先粘贴 OpenSea 链接。", "err");
+      setBusy(true);
+      try {
+        const data = await api("/api/opensea/resolve", { url });
+        applyOpenSea(data);
+        log(`OpenSea 已解析：${data.opensea.collection_name || data.opensea.slug} / ${data.chain.name} / ${data.contract}`, "ok");
+        if (data.opensea.next_stage) {
+          const stage = data.opensea.next_stage;
+          log(`下一阶段 ${stage.label || stage.stage_type} ${stage.start_time || ""} → ${stage.end_time || ""}，每钱包 ${stage.max_per_wallet ?? "--"}`, "ok");
+        }
+      } catch (err) {
+        log(`OpenSea 解析失败：${err.message}`, "err");
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    $("btnFill").onclick = () => {
+      $("chain").value = "1";
+      applyChainDefaults();
+      $("openseaUrl").value = "https://opensea.io/collection/qft-quantum-echoes";
+      $("contract").value = "0x5A5c9c3Cd186D95eFF4dA56ce48a173C7e46455A";
+      $("quantity").value = "5";
+      $("abiSource").value = "auto";
+      $("abiJson").value = "";
+      $("startStrategy").value = "scheduled";
+      refreshAbiStatus();
+      log("已填充 Quantum Echoes：Ethereum / 真实合约 / 到点抢跑。请自行粘贴私钥后再启动。", "ok");
+    };
+
+    $("btnProbe").onclick = async () => {
+      let config;
+      try {
+        config = buildConfig("inspect", { skipOpenSea: Boolean($("contract").value.trim()), publicProbe: true });
+      } catch (err) {
+        return log(err.message, "err");
+      }
+      setBusy(true);
+      setPill("phasePill", "检测环境中", "warn");
+      $("rpcTable").innerHTML = `<div class="empty">探测中...</div>`;
+      log(`开始探测默认公开 RPC，目标 chain_id=${config.chain.chain_id}，共 ${publicRpcUrls().length} 个节点`);
+      try {
+        const data = await api("/api/rpc/probe", config);
+        renderRpc(data.rpc || []);
+        state.probed = true;
+        const healthy = (data.rpc || []).filter((r) => r.status === "HEALTHY" || r.status === "DEGRADED").length;
+        if (!healthy) {
+          stopGasWatch();
+          setPill("phasePill", "RPC 不可用", "danger");
+          log("没有可用 RPC，请更换节点后再测。", "err");
+        } else {
+          setPill("phasePill", "环境已通过", "ok");
+          log(`RPC 测速完成，${healthy} 个节点可用。`, "ok");
+          if (data.gas) {
+            renderGas(data.gas);
+            log(`当前 gas：base ${formatGwei(data.gas.base_fee_gwei)} / 建议 tip ${formatGwei(data.gas.network_tip_gwei)} / maxFee ${formatGwei(state.gasLive.max_fee_gwei)} gwei`, "ok");
+            startGasWatch(false);
+          } else {
+            startGasWatch(true);
+          }
+        }
+      } catch (err) {
+        setPill("phasePill", "检测失败", "danger");
+        log(`RPC 探测失败：${err.message}`, "err");
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    $("btnInspect").onclick = async () => {
+      let config;
+      try {
+        config = buildConfig("inspect");
+      } catch (err) {
+        return log(err.message, "err");
+      }
+      setBusy(true);
+      setPill("phasePill", "分析合约中", "warn");
+      log(`分析 ${config.mint.contract || config.mint.opensea_url} ...`);
+      try {
+        const report = await api("/api/inspect", config);
+        renderRpc(report.rpc || []);
+        renderInspect(report);
+        if (state.gasRpcUrls.length && !state.gasTimer) startGasWatch();
+        state.inspected = true;
+        state.dryRan = false;
+        setPill("phasePill", "分析完成", "ok");
+        log(`合约分析完成。协议 ${report.protocol || "未知"}，方法 ${report.method ? report.method.signature : "未识别"}，状态 ${report.sale && report.sale.status}。`, report.method ? "ok" : "warn");
+      } catch (err) {
+        setPill("phasePill", "分析失败", "danger");
+        log(`合约分析失败：${err.message}`, "err");
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    $("btnDryRun").onclick = async () => {
+      if (!walletItems().length) return log("Dry Run 至少需要一个钱包私钥或地址。", "err");
+      let config;
+      try {
+        config = buildConfig("dry_run");
+      } catch (err) {
+        return log(err.message, "err");
+      }
+      setBusy(true);
+      setPill("phasePill", "Dry Run", "info");
+      log("对钱包执行 eth_call，不广播。");
+      try {
+        const data = await api("/api/dry-run", config);
+        if (data.report) {
+          renderRpc(data.report.rpc || []);
+          renderInspect(data.report);
+        }
+        const sim = data.simulation || {};
+        if (sim.ok) {
+          state.dryRan = true;
+          setPill("phasePill", "可启动", "ok");
+          log(`Dry Run 通过：${sim.message}`, "ok");
+        } else if (sim.expected) {
+          state.dryRan = true;
+          setPill("phasePill", "可启动", "ok");
+          log(`Dry Run 预期失败（${sim.sale_status || "未开售 / 已结束"}）：${sim.message}。开售前将使用 fallback gas。`, "warn");
+        } else {
+          state.dryRan = false;
+          setPill("phasePill", "Dry Run 失败", "danger");
+          log(`Dry Run 失败：${sim.message || "unknown"}`, "err");
+        }
+        if (data.plan) {
+          log(`已构造 ${data.plan.to} value=${formatEth(data.plan.value)} data=${String(data.plan.data || "").slice(0, 18)}…`);
+        }
+      } catch (err) {
+        state.dryRan = false;
+        setPill("phasePill", "Dry Run 失败", "danger");
+        log(`Dry Run 失败：${err.message}`, "err");
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    $("btnStart").onclick = async () => {
+      if (!walletItems().some((w) => w.private_key)) {
+        return log("启动需要私钥。当前只有地址的话只能分析，不能广播。", "err");
+      }
+      let config;
+      try {
+        config = buildConfig("mint");
+      } catch (err) {
+        return log(err.message, "err");
+      }
+      const startUnix = config.schedule.start_time_unix;
+      if (config.run.start_strategy === "scheduled" && startUnix && startUnix - Date.now() / 1000 > 180) {
+        const waitMin = Math.ceil((startUnix - Date.now() / 1000) / 60);
+        if (!confirm(`将按到点抢跑等待约 ${waitMin} 分钟，页面请求会一直挂起。确定启动？`)) return;
+      }
+      state.running = true;
+      state.abort = new AbortController();
+      setBusy(true);
+      setPill("runPill", "运行中", "warn");
+      setPill("phasePill", config.run.start_strategy === "scheduled" ? "等待开售" : "广播中", "warn");
+      log(config.run.start_strategy === "scheduled"
+        ? "已提交启动：T-20s 预签名，T=0 多 RPC 齐射。请求会一直等到开售或回执。"
+        : "已提交立即启动：签名后立刻多 RPC 广播。", "ok");
+      document.querySelectorAll("#walletBody tr").forEach((tr) => {
+        if (tr.dataset.status === "READY") tr.children[1].textContent = "running";
+      });
+      clearHeartbeat();
+      state.heartbeat = setInterval(() => {
+        log("启动请求仍在等待服务端（预签名 / 开售 / 回执）…");
+      }, 15000);
+      try {
+        const data = await api("/api/run/start", config, { signal: state.abort.signal });
+        if (data.report) renderInspect(data.report);
+        (data.events || []).forEach((line) => log(line));
+        applyMintResults(data.results || []);
+        const success = data.success != null ? data.success : (data.results || []).filter((r) => r.status === "SUCCESS").length;
+        setPill("runPill", success ? "已完成" : "结束", success ? "ok" : "danger");
+        setPill("phasePill", success ? "mint 成功" : "mint 结束", success ? "ok" : "warn");
+        log(`启动结束：成功 ${success} / ${data.prepared || (data.results || []).length}，广播耗时 ${data.elapsed_sec ?? "--"}s。`, success ? "ok" : "warn");
+      } catch (err) {
+        if (err.name === "AbortError") {
+          setPill("runPill", "已断开", "danger");
+          log("已断开浏览器请求。服务端若已预签名或广播，链上仍会继续。", "warn");
+        } else {
+          setPill("runPill", "失败", "danger");
+          setPill("phasePill", "启动失败", "danger");
+          log(`启动失败：${err.message}`, "err");
+        }
+      } finally {
+        clearHeartbeat();
+        state.running = false;
+        state.abort = null;
+        setBusy(false);
+      }
+    };
+
+    $("btnStop").onclick = () => {
+      if (state.abort) state.abort.abort();
+      clearHeartbeat();
+      state.running = false;
+      $("btnStop").disabled = true;
+      log("已请求停止当前浏览器等待。无法撤销已经发出的交易。", "warn");
+    };
+
+    async function boot() {
+      refreshAbiStatus();
+      applyChainDefaults();
+      try {
+        const health = await fetch("/api/health").then((r) => r.json());
+        if (!health.ok) throw new Error("health not ok");
+        log("后端已连接。检测 / 分析 / Dry Run / 启动都会打真实 API。", "ok");
+      } catch (err) {
+        log("连不上后端。请用 python -m mint_engine 启动后再操作。", "err");
+      }
+      try {
+        const chains = await fetch("/api/chains").then((r) => r.json());
+        if (Array.isArray(chains) && chains.length) {
+          const select = $("chain");
+          const current = select.value;
+          select.innerHTML = "";
+          chains.forEach((c) => {
+            CHAINS[c.chain_id] = {
+              name: c.name,
+              symbol: c.native_symbol,
+              public_rpc: c.public_rpc,
+              public_rpcs: c.public_rpcs || (c.public_rpc ? [c.public_rpc] : []),
+              has_public_mempool: c.has_public_mempool,
+            };
+            const opt = document.createElement("option");
+            opt.value = String(c.chain_id);
+            opt.textContent = c.name;
+            select.appendChild(opt);
+          });
+          select.value = [...select.options].some((o) => o.value === current) ? current : String(chains[0].chain_id);
+          applyChainDefaults();
+        }
+      } catch (err) {
+        log("链列表加载失败，使用页面内置链。", "warn");
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
