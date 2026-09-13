@@ -272,7 +272,7 @@
             <div>
               <label>自有 RPC（每行一个，可选）</label>
               <textarea id="rpcs" placeholder="https://your-private-rpc.example"></textarea>
-              <div class="hint">只用于分析、Dry Run 和广播。环境检测与实时 Gas 使用链上默认公开节点，不会打这里的地址。</div>
+              <div class="hint">填了就用于检测环境、分析、Dry Run 和广播。实时 Gas 始终走链上默认公开节点。</div>
             </div>
           </div>
         </div>
@@ -470,6 +470,7 @@
           <button class="btn-ghost" id="btnFill">填充示例</button>
           <button class="btn-ghost" id="btnResolveOpenSea">解析 OpenSea</button>
         </div>
+        <div class="hint" id="startHint" style="padding: 0 16px 12px;">解析 OpenSea 只回填链和合约。分析合约后即可启动。检测环境和 Dry Run 可选。</div>
       </aside>
 
       <main class="panel right">
@@ -482,7 +483,7 @@
 
         <div class="section">
           <h2>RPC 测速</h2>
-          <div id="rpcTable"><div class="empty">点击「检测环境」，并行探测延迟、高度和 chain_id。</div></div>
+          <div id="rpcTable"><div class="empty">点击「检测环境」，探测将用于分析与广播的 RPC（有自有节点测自有，否则测公开节点）。</div></div>
         </div>
 
         <div class="section">
@@ -532,6 +533,7 @@
       mintResults: [],
       sweepPreviewed: false,
       sweeping: false,
+      workPrimary: "",
     };
 
     const CHAINS = {
@@ -654,6 +656,35 @@
       return chain.public_rpc ? [chain.public_rpc] : [];
     }
 
+    function ownRpcUrls() {
+      return parseLines($("rpcs").value);
+    }
+
+    function workRpcUrls() {
+      const own = ownRpcUrls();
+      return own.length ? own : publicRpcUrls();
+    }
+
+    function rememberPrimary(rows) {
+      const primary = (rows || []).find((r) => r.role === "主")
+        || (rows || []).find((r) => r.status === "HEALTHY" || r.status === "DEGRADED");
+      state.workPrimary = primary && primary.url ? primary.url : "";
+    }
+
+    function rpcConfig() {
+      const urls = ownRpcUrls();
+      const pinned = state.workPrimary && (!urls.length || urls.includes(state.workPrimary))
+        ? state.workPrimary
+        : "";
+      return {
+        urls,
+        selection: pinned ? "manual" : "auto",
+        primary: pinned || null,
+        broadcast_backups: false,
+        probe_timeout_ms: 4000,
+      };
+    }
+
     const GAS_FIELD_DEFAULTS = { extraTip: "1", feeMul: "1" };
     const lastGasValues = { ...GAS_FIELD_DEFAULTS };
 
@@ -722,11 +753,7 @@
           start_strategy: $("startStrategy").value,
         },
         chain: { chain_id: Number($("chain").value) },
-        rpc: {
-          urls: options.publicProbe ? [] : parseLines($("rpcs").value),
-          selection: "auto",
-          probe_timeout_ms: 4000,
-        },
+        rpc: rpcConfig(),
         wallets: {
           source: "pasted",
           items: walletItems(),
@@ -795,10 +822,7 @@
       `;
       const primary = rows.find((r) => r.role === "主") || rows.find((r) => r.status === "HEALTHY" || r.status === "DEGRADED");
       $("kpiRpc").textContent = primary && primary.latency_ms != null ? `${primary.latency_ms}ms` : "--";
-      state.gasRpcUrls = rows
-        .filter((r) => r.status === "HEALTHY" || r.status === "DEGRADED")
-        .sort((a, b) => (a.role === "主" ? -1 : b.role === "主" ? 1 : 0))
-        .map((r) => r.url);
+      rememberPrimary(rows);
     }
 
     function currentGasConfig() {
@@ -873,7 +897,7 @@
     async function refreshGas(first) {
       const payload = {
         chain_id: Number($("chain").value),
-        rpc_urls: state.gasRpcUrls.length ? state.gasRpcUrls : publicRpcUrls(),
+        rpc_urls: publicRpcUrls(),
         gas: currentGasConfig(),
       };
       try {
@@ -1114,14 +1138,30 @@
       $("kpiWallet").textContent = `${success} / ${(results || []).length || walletItems().length}`;
     }
 
+    function syncActionButtons() {
+      const hasKey = walletItems().some((w) => w.private_key);
+      $("btnDryRun").disabled = !state.inspected;
+      $("btnStart").disabled = !state.inspected || !hasKey;
+      $("btnStart").title = !state.inspected
+        ? "先分析合约，才能启动"
+        : !hasKey
+          ? "启动需要私钥"
+          : "启动 mint";
+      const hint = $("startHint");
+      if (hint) {
+        if (!state.inspected) hint.textContent = "解析 OpenSea 只回填链和合约。分析合约后即可启动。检测环境和 Dry Run 可选。";
+        else if (!hasKey) hint.textContent = "合约已分析。填私钥后即可启动。";
+        else hint.textContent = "可以启动。发交易只用检测时选出的主 RPC，不会齐射到其它节点。";
+      }
+      syncSweepRunButton();
+    }
+
     function setBusy(busy) {
       ["btnProbe", "btnInspect", "btnDryRun", "btnStart", "btnFill", "btnResolveOpenSea", "btnSweepPreview", "btnSweepUseMint"].forEach((id) => {
         $(id).disabled = busy;
       });
       if (!busy) {
-        $("btnDryRun").disabled = !state.inspected;
-        $("btnStart").disabled = !state.dryRan || !walletItems().some((w) => w.private_key);
-        syncSweepRunButton();
+        syncActionButtons();
       } else {
         $("btnSweepRun").disabled = true;
       }
@@ -1163,6 +1203,8 @@
         const local = toLocalInput(stage.start_time || stage.startTime);
         if (local) $("startTime").value = local;
       }
+      state.inspected = false;
+      state.dryRan = false;
     }
 
     $("chain").addEventListener("change", () => {
@@ -1171,8 +1213,8 @@
       const publics = publicRpcUrls();
       log(
         isRobinhood()
-          ? `已选择 ${chain.name || "Robinhood"}：Gas 三项已锁定为 0，交易走链上最低价。`
-          : `已选择链 ${chain.name || $("chain").value} / chain_id=${$("chain").value}。测速将使用 ${publics.length} 个默认公开 RPC。`
+          ? `已选择 ${chain.name || "Robinhood"}：Gas 三项已锁定为 0，交易走链上最低价。检测与广播用自有 RPC（未填则公开），Gas 用公开节点。`
+          : `已选择链 ${chain.name || $("chain").value} / chain_id=${$("chain").value}。检测与广播用自有 RPC（未填则 ${publics.length} 个公开节点），Gas 用公开节点。`
       );
       if (state.probed) {
         state.gasRpcUrls = publics;
@@ -1189,6 +1231,13 @@
     });
     $("abiSource").addEventListener("change", refreshAbiStatus);
     $("abiJson").addEventListener("input", refreshAbiStatus);
+    $("wallets").addEventListener("input", syncActionButtons);
+    $("rpcs").addEventListener("input", () => {
+      const urls = ownRpcUrls();
+      if (state.workPrimary && urls.length && !urls.includes(state.workPrimary)) {
+        state.workPrimary = "";
+      }
+    });
     $("recipientMode").addEventListener("change", () => {
       $("recipientRow").classList.toggle("hidden", $("recipientMode").value !== "custom");
     });
@@ -1281,6 +1330,7 @@
           const stage = data.opensea.next_stage;
           log(`下一阶段 ${stage.label || stage.stage_type} ${stage.start_time || ""} → ${stage.end_time || ""}，每钱包 ${stage.max_per_wallet ?? "--"}`, "ok");
         }
+        log("链和合约已回填。填好私钥后点「分析合约」，通过即可启动。检测环境和 Dry Run 可选。", "ok");
       } catch (err) {
         log(`OpenSea 解析失败：${err.message}`, "err");
       } finally {
@@ -1304,26 +1354,33 @@
     $("btnProbe").onclick = async () => {
       let config;
       try {
-        config = buildConfig("inspect", { skipOpenSea: Boolean($("contract").value.trim()), publicProbe: true });
+        config = buildConfig("inspect", { skipOpenSea: Boolean($("contract").value.trim()) });
       } catch (err) {
         return log(err.message, "err");
       }
       setBusy(true);
       setPill("phasePill", "检测环境中", "warn");
       $("rpcTable").innerHTML = `<div class="empty">探测中...</div>`;
-      log(`开始探测默认公开 RPC，目标 chain_id=${config.chain.chain_id}，共 ${publicRpcUrls().length} 个节点`);
+      const targets = workRpcUrls();
+      const usingOwn = ownRpcUrls().length > 0;
+      log(
+        usingOwn
+          ? `开始探测自有 RPC，目标 chain_id=${config.chain.chain_id}，共 ${targets.length} 个节点`
+          : `未填自有 RPC，探测默认公开节点，目标 chain_id=${config.chain.chain_id}，共 ${targets.length} 个`
+      );
       try {
         const data = await api("/api/rpc/probe", config);
         renderRpc(data.rpc || []);
         state.probed = true;
+        state.gasRpcUrls = publicRpcUrls();
         const healthy = (data.rpc || []).filter((r) => r.status === "HEALTHY" || r.status === "DEGRADED").length;
         if (!healthy) {
           stopGasWatch();
           setPill("phasePill", "RPC 不可用", "danger");
-          log("没有可用 RPC，请更换节点后再测。", "err");
+          log(usingOwn ? "自有 RPC 不可用，请更换节点后再测。" : "没有可用 RPC，请更换节点后再测。", "err");
         } else {
           setPill("phasePill", "环境已通过", "ok");
-          log(`RPC 测速完成，${healthy} 个节点可用。`, "ok");
+          log(`RPC 测速完成，${healthy} 个节点可用。主节点 ${state.workPrimary || "已选出"}，发交易只打主节点。`, "ok");
           if (data.gas) {
             renderGas(data.gas);
             log(`当前 gas：base ${formatGwei(data.gas.base_fee_gwei)} / 建议 tip ${formatGwei(data.gas.network_tip_gwei)} / maxFee ${formatGwei(state.gasLive.max_fee_gwei)} gwei`, "ok");
@@ -1354,6 +1411,7 @@
         const report = await api("/api/inspect", config);
         renderRpc(report.rpc || []);
         renderInspect(report);
+        state.gasRpcUrls = publicRpcUrls();
         if (state.gasRpcUrls.length && !state.gasTimer) startGasWatch();
         state.inspected = true;
         state.dryRan = false;
@@ -1431,8 +1489,8 @@
       setPill("runPill", "运行中", "warn");
       setPill("phasePill", config.run.start_strategy === "scheduled" ? "等待开售" : "广播中", "warn");
       log(config.run.start_strategy === "scheduled"
-        ? "已提交启动：T-20s 预签名，T=0 多 RPC 齐射。请求会一直等到开售或回执。"
-        : "已提交立即启动：签名后立刻多 RPC 广播。", "ok");
+        ? "已提交启动：T-20s 预签名，T=0 用主 RPC 广播。请求会一直等到开售或回执。"
+        : "已提交立即启动：签名后立刻用主 RPC 广播。", "ok");
       document.querySelectorAll("#walletBody tr").forEach((tr) => {
         if (tr.dataset.status === "READY") tr.children[1].textContent = "running";
       });
@@ -1509,6 +1567,7 @@
       } catch (err) {
         log("链列表加载失败，使用页面内置链。", "warn");
       }
+      syncActionButtons();
     }
 
     boot();

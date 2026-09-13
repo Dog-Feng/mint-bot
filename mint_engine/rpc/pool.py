@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from mint_engine.core.exceptions import RpcError
+from mint_engine.core.exceptions import RpcError, is_rate_limited
 from mint_engine.core.models import ProbeResult
 
 
@@ -18,11 +18,13 @@ class RpcPool:
         timeout_ms: int = 1500,
         primary: str | None = None,
         selection: str = "auto",
+        broadcast_backups: bool = False,
     ):
         self.expected_chain_id = expected_chain_id
         self.timeout_ms = timeout_ms
         self.selection = selection
         self.forced_primary = primary
+        self.broadcast_backups = broadcast_backups
         self.urls = [u.strip() for u in urls if u and u.strip()]
         if not self.urls:
             raise RpcError("no RPC urls provided")
@@ -33,6 +35,7 @@ class RpcPool:
         self.results: list[ProbeResult] = []
         self.primary_url: str | None = None
         self.broadcast_urls: list[str] = []
+        self.healthy_urls: list[str] = []
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -52,9 +55,16 @@ class RpcPool:
         elif healthy:
             healthy[0].role = "主"
             self.primary_url = healthy[0].url
+        self.healthy_urls = [r.url for r in healthy]
         for item in healthy[1:]:
-            item.role = "广播备份" if item.status == "HEALTHY" else "仅备份"
-        self.broadcast_urls = [r.url for r in healthy]
+            if self.broadcast_backups:
+                item.role = "广播备份" if item.status == "HEALTHY" else "仅备份"
+            else:
+                item.role = "限流备用"
+        if self.broadcast_backups:
+            self.broadcast_urls = list(self.healthy_urls)
+        else:
+            self.broadcast_urls = [self.primary_url] if self.primary_url else []
         self.results = results
         if not self.primary_url:
             raise RpcError("no healthy RPC matched the selected chain")
@@ -96,18 +106,30 @@ class RpcPool:
                 error=str(exc),
             )
 
+    def _failover_urls(self, primary: str | None = None) -> list[str]:
+        start = primary or self.primary_url
+        ordered: list[str] = []
+        if start:
+            ordered.append(start)
+        for url in self.healthy_urls or self.broadcast_urls or self.urls:
+            if url and url not in ordered:
+                ordered.append(url)
+        return ordered
+
     async def call(self, method: str, params: list[Any], url: str | None = None) -> Any:
         target = url or self.primary_url
         if not target:
             raise RpcError("RPC pool has not been probed")
         errors = []
-        candidates = [target] + [u for u in self.broadcast_urls if u != target]
+        candidates = [target] if url is not None else self._failover_urls(target)
         for candidate in candidates:
             for attempt in range(3):
                 try:
                     return await self._call_url(candidate, method, params)
                 except Exception as exc:
                     errors.append(f"{candidate}: {exc}")
+                    if is_rate_limited(exc):
+                        break
                     await asyncio.sleep(0.25 * (attempt + 1))
             if url is not None:
                 break
@@ -153,27 +175,39 @@ class RpcPool:
             return price, max(price // 10, 1)
 
     async def broadcast(self, raw_tx: str) -> list[dict[str, Any]]:
-        urls = [u for u in (self.broadcast_urls or [self.primary_url]) if u]
+        if self.broadcast_backups:
+            urls = [u for u in (self.broadcast_urls or self._failover_urls()) if u]
+            return list(await asyncio.gather(*(self._send_one(url, raw_tx) for url in urls)))
 
-        async def one(url: str) -> dict[str, Any]:
-            started = time.perf_counter()
-            try:
-                tx_hash = await self._call_url(url, "eth_sendRawTransaction", [raw_tx])
-                return {
-                    "url": url,
-                    "ok": True,
-                    "tx_hash": tx_hash,
-                    "latency_ms": int((time.perf_counter() - started) * 1000),
-                }
-            except Exception as exc:
-                return {
-                    "url": url,
-                    "ok": False,
-                    "error": str(exc),
-                    "latency_ms": int((time.perf_counter() - started) * 1000),
-                }
+        results: list[dict[str, Any]] = []
+        for url in self._failover_urls():
+            item = await self._send_one(url, raw_tx)
+            results.append(item)
+            if item.get("ok"):
+                break
+            if is_rate_limited(Exception(str(item.get("error") or ""))):
+                continue
+            break
+        return results
 
-        return list(await asyncio.gather(*(one(url) for url in urls)))
+    async def _send_one(self, url: str, raw_tx: str) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            tx_hash = await self._call_url(url, "eth_sendRawTransaction", [raw_tx])
+            return {
+                "url": url,
+                "ok": True,
+                "tx_hash": tx_hash,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+            }
+        except Exception as exc:
+            return {
+                "url": url,
+                "ok": False,
+                "error": str(exc),
+                "rate_limited": is_rate_limited(exc),
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+            }
 
     async def get_receipt(self, tx_hash: str) -> dict[str, Any] | None:
         receipt = await self.call("eth_getTransactionReceipt", [tx_hash])
@@ -181,7 +215,7 @@ class RpcPool:
 
     async def wait_receipt(self, tx_hash: str, timeout: float = 180) -> dict[str, Any] | None:
         deadline = time.time() + timeout
-        urls = [u for u in (self.broadcast_urls or [self.primary_url]) if u]
+        urls = self._failover_urls()
         if not urls:
             return None
         while time.time() < deadline:
@@ -199,8 +233,13 @@ class RpcPool:
     async def _call_url(self, url: str, method: str, params: list[Any]) -> Any:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
         response = await self.client.post(url, json=payload)
+        if response.status_code == 429:
+            raise RpcError("rate limited 429", details={"rate_limited": True, "url": url})
         response.raise_for_status()
         body = response.json()
-        if body.get("error"):
-            raise RpcError(str(body["error"]))
+        error = body.get("error")
+        if error:
+            if is_rate_limited(Exception(str(error))):
+                raise RpcError(str(error), details={"rate_limited": True, "url": url})
+            raise RpcError(str(error))
         return body["result"]

@@ -39,6 +39,7 @@ class MintController:
             timeout_ms=config.rpc.probe_timeout_ms,
             primary=config.rpc.primary,
             selection=config.rpc.selection,
+            broadcast_backups=config.rpc.broadcast_backups,
         )
         self.wallets = WalletManager(config.wallets.items) if config.wallets.items else WalletManager([])
         self.events: list[str] = []
@@ -339,6 +340,9 @@ class MintController:
     async def _send_prepared(self, report: InspectReport, prepared: dict[str, Any]) -> dict[str, Any]:
         wallet = prepared["wallet"]
         broadcasts = await self.pool.broadcast(prepared["raw"])
+        for row in broadcasts:
+            if row.get("rate_limited"):
+                self.log(f"[RPC 429] {row.get('url')} 立即切换下一节点")
         sent = [row for row in broadcasts if row.get("ok")]
         if not sent:
             self.log(f"[SEND_FAILED] {wallet.address}")

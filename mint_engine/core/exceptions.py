@@ -33,3 +33,10 @@ class ConfigError(EngineError):
 class RpcError(EngineError):
     def __init__(self, message: str, **kwargs):
         super().__init__("RPC_ERROR", message, retryable=True, **kwargs)
+
+
+def is_rate_limited(exc: Exception) -> bool:
+    if isinstance(exc, EngineError) and exc.details.get("rate_limited"):
+        return True
+    text = str(exc).lower()
+    return "429" in text or "rate limit" in text or "too many requests" in text or "exceeded its compute units" in text

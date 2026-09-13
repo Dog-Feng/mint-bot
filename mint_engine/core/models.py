@@ -70,7 +70,7 @@ class RpcConfig(BaseModel):
     min_healthy: int = 1
     selection: str = "auto"
     primary: str | None = None
-    broadcast_backups: bool = True
+    broadcast_backups: bool = False
 
 
 class WalletConfig(BaseModel):
@@ -125,7 +125,7 @@ class ScheduleConfig(BaseModel):
 
 
 class SafetyConfig(BaseModel):
-    dry_run_required: bool = True
+    dry_run_required: bool = False
     allow_skip_simulation: bool = False
     never_log_private_keys: bool = True
 

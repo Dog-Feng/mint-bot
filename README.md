@@ -19,19 +19,20 @@
 ```text
 填链 / 合约或 OpenSea 链接 / 数量 / 钱包
         ↓
-检测环境（默认公开 RPC 测速 + 实时 Gas）
+检测环境（自有 RPC 测速；未填则公开节点。实时 Gas 走公开节点）
         ↓
 分析合约（Proxy、ABI、协议、Sale、钱包状态）
         ↓
 Dry Run（eth_call，不广播）
         ↓
-启动：T-20s 预签名 → T-5s 刷新档期 → T=0 多 RPC 齐射
+启动：T-20s 预签名 → T-5s 刷新档期 → T=0 主 RPC 广播
         ↓
 回执 / Token IDs；SEND_FAILED 或 TIMEOUT 才加 gas 重试
 ```
 
 - 链必须手选。贴 OpenSea 链接可自动回填链和真实合约，但手选链必须与 OpenSea 链一致。
-- 左侧「自有 RPC」只用于分析、Dry Run、广播；测速和实时 Gas 只用链上默认公开节点。
+- 填了「自有 RPC」：检测环境、分析、Dry Run、广播都打这些节点。测速选出主 RPC 后，发交易只打主节点；主节点 429 限流则立即切到下一个健康节点，不在原节点重试。实时 Gas 只用链上默认公开节点。未填自有 RPC 时，检测和发交易回退到公开节点。
+- 分析合约通过且已填私钥即可启动。检测环境和 Dry Run 可选。
 - `NOT_STARTED` 允许预约抢跑；`ENDED` / `SOLD_OUT` 拒绝发送。
 - 启动需要私钥。只填地址（40 位十六进制）只能分析。
 
@@ -117,7 +118,7 @@ python -m mint_engine
 | GET | `/api/health` | 探活 |
 | GET | `/api/chains` | 支持的链与公开 RPC |
 | POST | `/api/opensea/resolve` | 链接 → 链 + 合约 |
-| POST | `/api/rpc/probe` | 公开 RPC 测速 + 当前 Gas |
+| POST | `/api/rpc/probe` | 自有 RPC 测速（未填则公开）+ 公开节点 Gas |
 | POST | `/api/gas/quote` | 实时 Gas |
 | POST | `/api/inspect` | 分析合约 |
 | POST | `/api/dry-run` | 模拟，不广播 |

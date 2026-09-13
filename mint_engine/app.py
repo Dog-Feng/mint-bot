@@ -125,20 +125,25 @@ async def _quote_on_urls(chain_id: int, urls: list[str], gas: GasConfig) -> dict
 @app.post("/api/rpc/probe")
 async def probe(config: RunConfig):
     resolved, preview = await prepare_config(config)
-    urls = public_rpc_urls(resolved.chain.chain_id)
+    urls = [u.strip() for u in resolved.rpc.urls if u and u.strip()]
+    if not urls:
+        urls = public_rpc_urls(resolved.chain.chain_id)
+        resolved.rpc.urls = urls
     if not urls:
         raise HTTPException(
             status_code=400,
-            detail={"code": "CONFIG_ERROR", "message": "no public RPC for this chain"},
+            detail={"code": "CONFIG_ERROR", "message": "no RPC url provided"},
         )
-    resolved.rpc.urls = urls
     controller = MintController(resolved, preview)
     try:
         result = await controller.pool.probe()
         gas = None
         try:
-            quote = await quote_gas(controller.pool, resolved.gas, raise_on_cap=False)
-            gas = public_gas_snapshot(quote, resolved.gas)
+            gas = await _quote_on_urls(
+                resolved.chain.chain_id,
+                public_rpc_urls(resolved.chain.chain_id),
+                resolved.gas,
+            )
         except Exception:
             gas = None
         return {"rpc": [item.model_dump() for item in result], "gas": gas}
