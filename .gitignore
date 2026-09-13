@@ -7,3 +7,5 @@ venv/
 abi_cache/
 results/
 *.log
+evm_private.txt
+*_private.txt

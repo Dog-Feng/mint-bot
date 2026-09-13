@@ -405,7 +405,7 @@
             <div>
               <label>NFT 合约</label>
               <input id="sweepContract" placeholder="默认使用上方 Mint 合约" />
-              <div class="hint">一般就是刚 mint 的合约。SeaDrop 等若 token 合约不同，在这里改。</div>
+              <div class="hint">只扫当前所选链上这个合约的持仓，不会查其他链。SeaDrop 等若 token 合约不同，在这里改。</div>
             </div>
           </div>
           <div class="row">
@@ -493,7 +493,7 @@
 
         <div class="section">
           <h2>归集预览 <span id="sweepTag" class="pill">未预览</span></h2>
-          <div id="sweepBox"><div class="empty">选好转出范围后点「预览持仓」。链上扫描会查各源钱包在该 NFT 合约下的持仓。</div></div>
+          <div id="sweepBox"><div class="empty">选好转出范围后点「预览持仓」。链上扫描只查当前所选链、该 NFT 合约下的持仓。</div></div>
         </div>
 
         <div class="report">
@@ -1068,6 +1068,7 @@
         ? `<div class="hint" style="color:var(--warn)">目标地址也在源钱包列表里。转给自己可以，但起不到归集效果。</div>`
         : "";
       const modeLabel = { last_mint: "本次 mint 结果", scan: "链上扫描持仓", manual: "手动 token ID" }[data.mode] || data.mode;
+      const chainName = data.chain_name || (CHAINS[data.chain_id] || {}).name || "";
       const rows = data.wallets || [];
       const results = data.results || [];
       const resultTable = results.length ? `
@@ -1087,7 +1088,7 @@
       ` : "";
       $("sweepBox").innerHTML = `
         <div class="kv">
-          <b>链</b><span>${escapeHtml(String(data.chain_id || $("chain").value))}</span>
+          <b>链</b><span>${escapeHtml(chainName ? `${chainName} / ${data.chain_id}` : String(data.chain_id || $("chain").value))}</span>
           <b>NFT 合约</b><span class="mono">${escapeHtml(data.contract || "")}</span>
           <b>目标地址</b><span class="mono">${escapeHtml(data.destination || "预览可不填，确认归集时再填")}</span>
           <b>范围</b><span>${escapeHtml(modeLabel)} · ${escapeHtml(data.standard || "")} · 可转 ${data.ready ?? 0} / 跳过 ${data.skipped ?? 0}</span>
@@ -1216,6 +1217,8 @@
           ? `已选择 ${chain.name || "Robinhood"}：Gas 三项已锁定为 0，交易走链上最低价。检测与广播用自有 RPC（未填则公开），Gas 用公开节点。`
           : `已选择链 ${chain.name || $("chain").value} / chain_id=${$("chain").value}。检测与广播用自有 RPC（未填则 ${publics.length} 个公开节点），Gas 用公开节点。`
       );
+      state.sweepPreviewed = false;
+      syncSweepRunButton();
       if (state.probed) {
         state.gasRpcUrls = publics;
         startGasWatch();

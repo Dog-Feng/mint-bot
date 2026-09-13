@@ -6,7 +6,8 @@ from typing import Any
 import httpx
 from eth_utils import keccak
 
-from mint_engine.config.chains import get_chain, public_rpc_urls
+from mint_engine.config.chains import ChainPreset, get_chain, public_rpc_urls
+from mint_engine.config.settings import get_settings
 from mint_engine.core.exceptions import ConfigError
 from mint_engine.core.models import SweepRequest, TxPlan
 from mint_engine.evm import (
@@ -26,6 +27,13 @@ from mint_engine.wallet.manager import ResolvedWallet, WalletManager
 
 TRANSFER_721 = "0x" + keccak(text="Transfer(address,address,uint256)").hex()
 ERC721_ENUMERABLE_IID = "0x780e9d63"
+EXPLORER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; mint-engine/0.1)",
+    "Accept": "application/json",
+}
+LOG_LOOKBACK = 80_000
+LOG_CHUNK = 2_000
+LOG_CHUNK_MIN = 200
 
 
 def _topic_address(address: str) -> str:
@@ -53,15 +61,32 @@ def _ids_from_map(last_mint: dict[str, list[str]], address: str) -> list[int]:
 
 
 async def _open_pool(chain_id: int, rpc_urls: list[str]) -> RpcPool:
-    urls = [u.strip() for u in rpc_urls if u and u.strip()] or public_rpc_urls(chain_id)
+    chain = get_chain(chain_id)
+    preferred = [url.strip() for url in rpc_urls if url and url.strip()]
+    same_chain = public_rpc_urls(chain.chain_id)
+    urls = preferred or same_chain
     if not urls:
-        raise ConfigError("no RPC url provided")
-    pool = RpcPool(urls, chain_id, timeout_ms=4000)
+        raise ConfigError(f"chain {chain.chain_id} 没有可用 RPC")
+    pool = RpcPool(urls, chain.chain_id, timeout_ms=4000)
     try:
         await pool.probe()
+        return pool
     except Exception:
-        pool.primary_url = urls[0]
-        pool.broadcast_urls = urls
+        await pool.aclose()
+    if preferred and same_chain:
+        pool = RpcPool(same_chain, chain.chain_id, timeout_ms=4000)
+        try:
+            await pool.probe()
+            return pool
+        except Exception:
+            pool.primary_url = same_chain[0]
+            pool.broadcast_urls = same_chain
+            pool.healthy_urls = same_chain
+            return pool
+    pool = RpcPool(urls, chain.chain_id, timeout_ms=4000)
+    pool.primary_url = urls[0]
+    pool.broadcast_urls = urls
+    pool.healthy_urls = urls
     return pool
 
 
@@ -131,32 +156,66 @@ def _token_from_721_log(log: dict[str, Any]) -> int | None:
     return None
 
 
+def _range_too_large(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        needle in text
+        for needle in (
+            "block range is too large",
+            "query returned more than",
+            "query timeout",
+            "range limit",
+            "-32062",
+            "exceeds the max",
+            "too many blocks",
+            "eth_getlogs is limited",
+            "response size exceeded",
+            "log response size exceeded",
+        )
+    )
+
+
 async def _get_logs(pool: RpcPool, params: dict[str, Any]) -> list[dict[str, Any]]:
     result = await pool.call("eth_getLogs", [params])
     return result or []
 
 
-async def _scan_721_logs(pool: RpcPool, contract: str, owner: str) -> list[int]:
+async def _get_logs_range(
+    pool: RpcPool,
+    contract: str,
+    topics: list[str | None],
+) -> list[dict[str, Any]]:
     latest = await pool.get_block_number()
-    start = max(0, latest - 80_000)
-    incoming = await _get_logs(
-        pool,
-        {
-            "address": contract,
-            "fromBlock": hex(start),
-            "toBlock": "latest",
-            "topics": [TRANSFER_721, None, _topic_address(owner)],
-        },
-    )
-    outgoing = await _get_logs(
-        pool,
-        {
-            "address": contract,
-            "fromBlock": hex(start),
-            "toBlock": "latest",
-            "topics": [TRANSFER_721, _topic_address(owner), None],
-        },
-    )
+    start = max(0, latest - LOG_LOOKBACK)
+    span = LOG_CHUNK
+    logs: list[dict[str, Any]] = []
+    cursor = start
+    while cursor <= latest:
+        end = min(latest, cursor + span - 1)
+        try:
+            batch = await _get_logs(
+                pool,
+                {
+                    "address": contract,
+                    "fromBlock": hex(cursor),
+                    "toBlock": hex(end),
+                    "topics": topics,
+                },
+            )
+            logs.extend(batch)
+            cursor = end + 1
+        except Exception as exc:
+            if _range_too_large(exc) and span > LOG_CHUNK_MIN:
+                span = max(LOG_CHUNK_MIN, span // 2)
+                continue
+            raise
+    return logs
+
+
+async def _scan_721_logs(pool: RpcPool, contract: str, owner: str) -> list[int]:
+    owner_topic = _topic_address(owner)
+    incoming = await _get_logs_range(pool, contract, [TRANSFER_721, None, owner_topic])
+    outgoing = await _get_logs_range(pool, contract, [TRANSFER_721, owner_topic, None])
     held: dict[int, int] = {}
     for log in incoming:
         token_id = _token_from_721_log(log)
@@ -182,45 +241,133 @@ async def _tokens_of_owner_list(pool: RpcPool, contract: str, owner: str) -> lis
     return []
 
 
-async def _scan_blockscout(explorer: str | None, contract: str, owner: str) -> list[int]:
-    if not explorer:
+def _row_contract(row: dict[str, Any]) -> str:
+    token = row.get("token") if isinstance(row.get("token"), dict) else {}
+    for key in (
+        "TokenAddress",
+        "tokenAddress",
+        "contractAddress",
+        "ContractAddress",
+        "address",
+        "address_hash",
+    ):
+        value = row.get(key) or token.get(key)
+        if value:
+            return str(value).lower()
+    return ""
+
+
+def _row_token_id(row: dict[str, Any]) -> int | None:
+    for key in ("TokenId", "tokenID", "tokenId", "token_id", "id"):
+        value = row.get(key)
+        if value is None:
+            continue
+        try:
+            return _as_int(value)
+        except Exception:
+            continue
+    return None
+
+
+async def _scan_etherscan_nfts(chain: ChainPreset, contract: str, owner: str) -> list[int]:
+    if not chain.explorer_api or not chain.etherscan_chain_id:
         return []
-    base = explorer.rstrip("/")
-    url = f"{base}/api/v2/addresses/{checksum(owner)}/nft"
+    key = get_settings().etherscan_api_key
     want = contract.lower()
     found: list[int] = []
-    params: dict[str, str] = {"type": "ERC-721"}
-    async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "mint-engine/0.1"}) as client:
-        for _ in range(8):
-            response = await client.get(url, params=params)
+    async with httpx.AsyncClient(timeout=20, headers=EXPLORER_HEADERS) as client:
+        for page in range(1, 6):
+            params = {
+                "chainid": chain.etherscan_chain_id,
+                "module": "account",
+                "action": "addnft",
+                "address": checksum(owner),
+                "contractaddress": checksum(contract),
+                "page": page,
+                "offset": 100,
+            }
+            if key:
+                params["apikey"] = key
+            response = await client.get(chain.explorer_api, params=params)
             if response.status_code >= 400:
                 break
             body = response.json()
-            for item in body.get("items") or []:
-                token = item.get("token") or {}
-                addr = (token.get("address_hash") or token.get("address") or "").lower()
+            rows = body.get("result")
+            if not isinstance(rows, list) or not rows:
+                break
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                addr = _row_contract(row)
                 if addr and addr != want:
                     continue
-                token_id = item.get("id") or item.get("token_id")
-                if token_id is None:
-                    continue
-                try:
-                    found.append(_as_int(token_id))
-                except Exception:
-                    continue
-            nxt = body.get("next_page_params")
-            if not nxt:
+                token_id = _row_token_id(row)
+                if token_id is not None:
+                    found.append(token_id)
+            if len(rows) < 100 or len(found) >= 256:
                 break
-            params = {str(k): str(v) for k, v in nxt.items()}
-            params.setdefault("type", "ERC-721")
     return found
+
+
+async def _scan_blockscout(chain: ChainPreset, contract: str, owner: str) -> list[int]:
+    bases: list[str] = []
+    if chain.explorer:
+        bases.append(chain.explorer.rstrip("/") + "/api/v2")
+    if chain.explorer_api:
+        api = chain.explorer_api.rstrip("/")
+        bases.append(api + "/v2" if api.endswith("/api") else api)
+    seen: set[str] = set()
+    want = contract.lower()
+    found: list[int] = []
+    async with httpx.AsyncClient(timeout=20, headers=EXPLORER_HEADERS) as client:
+        for base in bases:
+            if base in seen:
+                continue
+            seen.add(base)
+            url = f"{base}/addresses/{checksum(owner)}/nft"
+            params: dict[str, str] = {"type": "ERC-721"}
+            ok = False
+            for _ in range(8):
+                response = await client.get(url, params=params)
+                if response.status_code >= 400:
+                    break
+                body = response.json()
+                ok = True
+                for item in body.get("items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    addr = _row_contract(item)
+                    if addr and addr != want:
+                        continue
+                    token_id = _row_token_id(item)
+                    if token_id is not None:
+                        found.append(token_id)
+                nxt = body.get("next_page_params")
+                if not nxt:
+                    break
+                params = {str(k): str(v) for k, v in nxt.items()}
+                params.setdefault("type", "ERC-721")
+            if ok:
+                break
+    return found
+
+
+async def _scan_explorer(chain: ChainPreset, contract: str, owner: str) -> list[int]:
+    blob = f"{chain.explorer or ''} {chain.explorer_api or ''}".lower()
+    if chain.etherscan_chain_id and chain.explorer_api and "etherscan.io" in blob:
+        found = await _scan_etherscan_nfts(chain, contract, owner)
+        if found:
+            return found
+    if "blockscout" in blob:
+        return await _scan_blockscout(chain, contract, owner)
+    return []
 
 
 async def _scan_721(
     pool: RpcPool,
     contract: str,
     owner: str,
-    explorer: str | None = None,
+    chain: ChainPreset,
 ) -> tuple[list[int], str]:
     try:
         balance = await _balance_721(pool, contract, owner)
@@ -243,7 +390,7 @@ async def _scan_721(
                 return tokens, ""
         except Exception:
             pass
-    explorer_ids = await _scan_blockscout(explorer, contract, owner)
+    explorer_ids = await _scan_explorer(chain, contract, owner)
     if explorer_ids:
         return explorer_ids[:256], ""
     try:
@@ -294,11 +441,10 @@ async def _resolve_wallet_tokens(
         if request.max_per_wallet:
             held = held[: request.max_per_wallet]
         return held, "" if held else "没有可转 NFT"
-    explorer = None
     try:
-        explorer = get_chain(request.chain_id).explorer
-    except Exception:
-        explorer = None
+        chain = get_chain(request.chain_id)
+    except ValueError as exc:
+        return [], str(exc)
     if request.mode == "manual":
         tokens = await _owned_721(pool, contract, wallet.address, [_as_int(x) for x in request.token_ids])
         note = ""
@@ -306,7 +452,7 @@ async def _resolve_wallet_tokens(
         tokens = await _owned_721(pool, contract, wallet.address, _ids_from_map(request.last_mint, wallet.address))
         note = ""
     else:
-        tokens, note = await _scan_721(pool, contract, wallet.address, explorer)
+        tokens, note = await _scan_721(pool, contract, wallet.address, chain)
         if request.mode == "last_mint" and tokens:
             note = "本次结果为空，已改扫链上持仓"
     if request.max_per_wallet:
@@ -347,6 +493,10 @@ async def preview_sweep(request: SweepRequest) -> dict[str, Any]:
         raise ConfigError("手动模式请填写 token ID")
     if not request.wallets:
         raise ConfigError("归集需要源钱包私钥")
+    try:
+        chain = get_chain(request.chain_id)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     dest = checksum(request.destination) if request.destination and is_address(request.destination) else None
     managers = WalletManager(request.wallets)
     signers = managers.signers()
@@ -377,7 +527,8 @@ async def preview_sweep(request: SweepRequest) -> dict[str, Any]:
             events.append(f"{wallet.label} {status} ids={','.join(str(t) for t, _ in tokens) or '-'}")
         dest_is_source = bool(dest and any(w.address.lower() == dest.lower() for w in signers))
         return {
-            "chain_id": request.chain_id,
+            "chain_id": chain.chain_id,
+            "chain_name": chain.name,
             "contract": contract,
             "destination": dest,
             "dest_is_source": dest_is_source,

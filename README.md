@@ -68,7 +68,7 @@ mint 完成后，控制台「归集 NFT」把各源钱包里的 NFT 转到一个
 | 标准 | 自动 / ERC-721 / ERC-1155 |
 | 归集并发 | 不同源钱包并行；同一钱包多枚串行 |
 
-预览只问「这个源钱包有没有该合约的 NFT」。有则列出 token ID。扫描顺序：`tokensOfOwner` / `walletOfOwner` → Enumerable → 浏览器 NFT 列表 → Transfer 日志。空钱包跳过。ERC-1155 只用本次结果或手动 ID。
+预览只问「这个源钱包在当前所选链上有没有该合约的 NFT」，不扫其他链。有则列出 token ID。扫描顺序：所选链 RPC 上的 `tokensOfOwner` / `walletOfOwner` → Enumerable → 该链浏览器持仓接口（Etherscan 带 `chainid` / Blockscout）→ 同链 Transfer 日志（按节点限制切块）。空钱包跳过。ERC-1155 只用本次结果或手动 ID。
 
 ## 本地启动
 
