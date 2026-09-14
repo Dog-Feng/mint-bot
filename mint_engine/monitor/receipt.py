@@ -23,13 +23,20 @@ def parse_token_ids(receipt: dict | None, recipient: str) -> list[int]:
     want = recipient.lower().replace("0x", "")
     for log in receipt.get("logs") or []:
         topics = log.get("topics") or []
-        if len(topics) < 4:
+        if len(topics) < 3:
             continue
         topic0 = "0x" + _topic_hex(topics[0])
         if topic0 == TRANSFER:
             if _topic_hex(topics[2])[-40:] != want:
                 continue
-            token_ids.append(int(_topic_hex(topics[3]), 16))
+            if len(topics) >= 4:
+                token_ids.append(int(_topic_hex(topics[3]), 16))
+            else:
+                data = _topic_hex(log.get("data") or "0x")
+                if len(data) >= 64:
+                    token_ids.append(int(data[-64:], 16))
+            continue
+        if len(topics) < 4:
             continue
         if topic0 == CONSECUTIVE_TRANSFER:
             if _topic_hex(topics[3])[-40:] != want:
@@ -99,6 +106,56 @@ def _selector4(name: str) -> str:
 
 _SOLD_OUT_SELECTORS = {_selector4(name) for name in _SOLD_OUT_ERRORS}
 
+_ERROR_STRING_SELECTOR = "08c379a0"
+
+
+def revert_custom_selectors(data: str | None) -> set[str]:
+    """Return 4-byte custom error selectors present at the start of revert hex payloads."""
+    found: set[str] = set()
+    if not data:
+        return found
+    text = data if isinstance(data, str) else str(data)
+    lower = text.lower()
+    pos = 0
+    while True:
+        idx = lower.find("0x", pos)
+        if idx < 0:
+            break
+        j = idx + 2
+        while j < len(lower) and lower[j] in "0123456789abcdef":
+            j += 1
+        chunk = lower[idx + 2 : j]
+        if len(chunk) >= 8:
+            head = chunk[:8]
+            if head == _ERROR_STRING_SELECTOR:
+                pos = j
+                continue
+            if head in _SOLD_OUT_SELECTORS:
+                found.add(head)
+        pos = j if j > idx + 2 else idx + 2
+    return found
+
+
+def _sold_out_in_decoded_message(blob: str) -> bool:
+    compact = blob.replace(" ", "").replace("_", "").replace("-", "")
+    compact = compact.replace("presaleended", "").replace("alreadyminted", "").replace("alreadyclaimed", "")
+    return any(
+        needle in compact
+        for needle in (
+            "soldout",
+            "maxsupply",
+            "exceedssupply",
+            "exceedsmaxsupply",
+            "insufficientsupply",
+            "nosupplyleft",
+            "supplyexceeded",
+            "mintcap",
+            "capreached",
+            "publicsaleended",
+            "saleended",
+        )
+    )
+
 
 def revert_blob(exc: Exception) -> str:
     parts = [str(exc)]
@@ -119,26 +176,12 @@ def revert_blob(exc: Exception) -> str:
 
 
 def is_sold_out(text: str | None) -> bool:
-    blob = (text or "").lower()
-    if not blob:
+    if not text:
         return False
-    if any(sel in blob for sel in _SOLD_OUT_SELECTORS):
+    blob = str(text)
+    if revert_custom_selectors(blob):
         return True
-    compact = blob.replace(" ", "").replace("_", "").replace("-", "")
-    compact = compact.replace("presaleended", "").replace("alreadyminted", "").replace("alreadyclaimed", "")
-    return any(
-        needle in compact
-        for needle in (
-            "soldout",
-            "maxsupply",
-            "exceedssupply",
-            "exceedsmaxsupply",
-            "insufficientsupply",
-            "nosupplyleft",
-            "supplyexceeded",
-            "mintcap",
-            "capreached",
-            "publicsaleended",
-            "saleended",
-        )
-    )
+    decoded = decode_revert(extract_revert_data(blob) or blob)
+    if decoded and decoded != blob and _sold_out_in_decoded_message(decoded.lower()):
+        return True
+    return _sold_out_in_decoded_message(blob.lower())

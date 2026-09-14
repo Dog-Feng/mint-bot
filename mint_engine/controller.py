@@ -21,7 +21,7 @@ from mint_engine.core.models import (
 from mint_engine.evm import checksum
 from mint_engine.monitor.receipt import decode_revert, is_sold_out, parse_token_ids, revert_blob
 from mint_engine.rpc.pool import RpcPool, short_rpc_url
-from mint_engine.transaction.gas import quote_gas
+from mint_engine.transaction.gas import quote_gas, worst_case_gas_reserve_wei
 from mint_engine.transaction.signer import sign_tx
 from mint_engine.wallet.manager import WalletManager
 
@@ -58,7 +58,8 @@ class MintController:
         method = analysis.get("method")
         quantity = self.config.mint.quantity
         value = (sale.price * quantity) if sale else 0
-        wallets = await self._wallet_states(sale, value)
+        gas_reserve = await worst_case_gas_reserve_wei(self.pool, self.config.gas)
+        wallets = await self._wallet_states(sale, value, gas_reserve)
         report = InspectReport(
             chain_id=self.chain.chain_id,
             chain_name=self.chain.name,
@@ -176,11 +177,16 @@ class MintController:
             raise ConfigError("no wallet with a private key")
 
         conc = self._concurrency()
-        shard_urls = self._shard_urls(len(ready))
         start_time = self._resolve_start_time(report)
         if start_time:
-            await self._wait_until(start_time - self.config.schedule.sign_lead_sec, "PREPARE")
-            self.log("T-20: skip mass pre-sign; each wallet will estimateGas+sign+send at T=0")
+            prepare_lead = self.config.schedule.prepare_lead_sec
+            sign_lead = self.config.schedule.sign_lead_sec
+            if prepare_lead > sign_lead and time.time() < start_time - prepare_lead:
+                await self._wait_until(start_time - prepare_lead, "PREPARE_LEAD")
+            await self._wait_until(start_time - sign_lead, "PREPARE")
+            self.log(
+                f"T-{sign_lead}s: skip mass pre-sign; each wallet will estimateGas+sign+send at T=0"
+            )
             await self._wait_until(start_time - self.config.schedule.final_check_lead_sec, "FINAL REFRESH")
             report = await self._refresh_report(report)
             if report.sale.status in {SaleStatus.ENDED, SaleStatus.SOLD_OUT}:
@@ -193,6 +199,10 @@ class MintController:
             if report.sale.status in {SaleStatus.ENDED, SaleStatus.SOLD_OUT}:
                 raise ConfigError(f"sale became {report.sale.status.value} before launch")
 
+        if self.config.rpc.probe_on_start:
+            await self.pool.probe()
+            self.log("RPC re-probe before launch")
+        shard_urls = self._shard_urls(len(ready))
         self.log("BLAST sign-and-send per wallet")
         self._log_shards(ready, shard_urls, conc)
         quote = await quote_gas(self.pool, self.config.gas, attempt=0)
@@ -581,7 +591,7 @@ class MintController:
             return ready
         raise ConfigError("dry run needs at least one wallet address")
 
-    async def _wallet_states(self, sale, value: int) -> list[WalletReady]:
+    async def _wallet_states(self, sale, value: int, gas_reserve: int) -> list[WalletReady]:
         wallets = self.wallets.wallets
         conc = self._concurrency()
         shard_urls = self._shard_urls(len(wallets)) if wallets else []
@@ -608,7 +618,6 @@ class MintController:
             if not wallet.can_sign:
                 status = WalletStatus.MISSING_KEY
                 note = "inspect-only, no private key"
-            gas_reserve = self.config.gas.fallback_gas_limit * 10**9
             if balance < value + gas_reserve and status == WalletStatus.READY:
                 status = WalletStatus.INSUFFICIENT_ETH
             if sale and sale.max_per_wallet is not None and sale.max_per_wallet < self.config.mint.quantity:

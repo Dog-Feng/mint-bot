@@ -28,14 +28,15 @@ def public_gas_snapshot(quote: dict[str, int], config: GasConfig) -> dict:
     }
 
 
-async def quote_gas(
-    pool: RpcPool,
+def compute_eip1559_fees(
+    base: int,
+    tip: int,
     config: GasConfig,
-    fallback_limit: int | None = None,
+    *,
     attempt: int = 0,
     raise_on_cap: bool = True,
-) -> dict[str, int]:
-    base, tip = await pool.fee_hint()
+) -> tuple[int, int]:
+    """Return (priority_fee, max_fee_per_gas) in wei."""
     bump = config.bump
     extra_gwei = bump.extra_priority_gwei or 0
     extra = int(max(extra_gwei, 0) * GWEI)
@@ -56,6 +57,20 @@ async def quote_gas(
         max_fee = cap
         if priority >= max_fee:
             priority = max(max_fee - 1, 1)
+    return priority, max_fee
+
+
+async def quote_gas(
+    pool: RpcPool,
+    config: GasConfig,
+    fallback_limit: int | None = None,
+    attempt: int = 0,
+    raise_on_cap: bool = True,
+) -> dict[str, int]:
+    base, tip = await pool.fee_hint()
+    priority, max_fee = compute_eip1559_fees(
+        base, tip, config, attempt=attempt, raise_on_cap=raise_on_cap
+    )
     return {
         "base_fee": base,
         "network_tip": tip,
@@ -64,6 +79,28 @@ async def quote_gas(
         "gas_limit": fallback_limit or config.fallback_gas_limit or 280000,
         "attempt": attempt,
     }
+
+
+async def worst_case_gas_reserve_wei(pool: RpcPool, config: GasConfig) -> int:
+    """Balance check: gas_limit × maxFee (same rules as mint quoting)."""
+    limit = config.fallback_gas_limit or 280000
+    try:
+        quote = await quote_gas(pool, config, raise_on_cap=False)
+        return int(quote["gas_limit"]) * int(quote["max_fee"])
+    except Exception:
+        pass
+    try:
+        base, tip = await pool.fee_hint()
+        _priority, max_fee = compute_eip1559_fees(base, tip, config, raise_on_cap=False)
+        return limit * max(max_fee, 1)
+    except Exception:
+        pass
+    bump = config.bump
+    mul = bump.max_fee_multiplier if bump.max_fee_multiplier and bump.max_fee_multiplier > 0 else 1.0
+    extra = int(max(bump.extra_priority_gwei or 0, 0) * GWEI)
+    # RPC 不可用时：仅按配置估，默认 base≈1 gwei，不用固定 30 gwei
+    max_fee = int(GWEI * mul + extra)
+    return limit * max(max_fee, extra + 1)
 
 
 async def resolve_gas_limit(

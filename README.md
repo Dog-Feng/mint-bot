@@ -25,18 +25,20 @@
         ↓
 Dry Run（eth_call，不广播）
         ↓
-启动：T-5s 刷新档期 → T=0 各钱包在自己的分片节点上 estimateGas、签名并立刻广播；回执回来再发该节点下一钱包
+启动：可选 T-60 PREPARE_LEAD（prepare_lead > sign_lead 时）→ T-sign_lead → T-5s 刷新档期 → T=0 前 re-probe 并重算分片 → 各钱包在分片节点上 estimateGas、签名并立刻广播；回执回来再发该节点下一钱包
         ↓
 回执 / Token IDs；任一钱包回执、广播失败或 estimateGas 为 SoldOut 时，未发送的钱包全部 SKIP（页面「售罄后停止未广播钱包」）。已发出的仍等回执。SEND_FAILED 或 TIMEOUT 才加 gas 重试
 ```
 
 - 链必须手选。贴 OpenSea 链接可自动回填链和真实合约，但手选链必须与 OpenSea 链一致。
-- 填了「自有 RPC」：测速按延迟排序。**并发数 = 每个节点同时飞行的钱包数**（含等回执）。钱包按组切分，优先填延迟最低的节点。合约分析、Dry Run `eth_call`、gas 单价只打一次（主节点/公开节点）。每个钱包的余额、nonce、`estimateGas`、广播、回执都走该钱包的分片节点。某节点 429 则切到延迟下一名，最后才绕回更快的节点。未填自有 RPC 时回退到公开节点。
+- 填了「自有 RPC」：测速按延迟排序。**并发数 = 每个节点同时飞行的钱包数**（含等回执）。钱包按组切分，优先填延迟最低的节点。合约分析、Dry Run `eth_call`、gas 单价只打一次（主节点/公开节点）。每个钱包的余额、nonce、`estimateGas`、广播、回执都走该钱包的分片节点。某节点 429 则切到延迟下一名，最后才绕回更快的节点。未填自有 RPC 时回退到公开节点。`rpc.probe_on_start`（默认 true）：**开抢前再 probe 一次**并重算分片（预约等待期间节点延迟可能变化）。
 - 分析合约通过且已填私钥即可启动。检测环境和 Dry Run 可选。启动名单是「有私钥的钱包」，不按分析页的 READY 过滤。
 - `NOT_STARTED` 允许预约抢跑；`ENDED` / `SOLD_OUT` 拒绝发送。
 - 启动需要私钥。只填地址（40 位十六进制）只能分析。
 - 数量 `quantity` 写入**一笔** mint 的参数（例如 `mint(5)`），应付 `price × quantity`。每个钱包每轮只发这一笔，不是连发 5 笔。
-- 启动前不查「这个地址已经 mint 过几枚」。已打满再点启动仍会广播，链上一般 `AlreadyMinted` revert，只该钱包失败，不停其他人。总量售罄（`SoldOut` / `MaxSupply*`）才会 SKIP 未发送的钱包。`execution reverted` 会立刻失败，不再换遍所有 RPC 重试。
+- 启动前不查「这个地址已经 mint 过几枚」。已打满再点启动仍会广播，链上一般 `AlreadyMinted` revert，只该钱包失败，不停其他人。总量售罄（`SoldOut` / `MaxSupply*` 等 custom error）才会 SKIP 未发送的钱包；售罄判断解析 revert 载荷前 4 字节，避免误伤。`execution reverted` 会立刻失败，不再换遍所有 RPC 重试。
+- 分析页钱包 ETH：`mint 应付 + gas_limit×maxFee`（与启动同套 Gas 配置；RPC 不可用时按配置兜底，约 1 gwei base + 额外 tip）。
+- Direct Mint 多参数（如 `deadline`、多个 `address`）需在 `mint.extra_params` 填写；分析 gaps 会提示。
 
 ## Gas 怎么算
 
@@ -134,9 +136,12 @@ python -m mint_engine
 mint_engine/           后端引擎与 FastAPI
 mint_engine/sweep/     NFT 归集（预览 + transfer）
 web/console.html       控制台
+tests/                 单元测试（售罄检测、Direct 参数、分片）
 scripts/start.sh       启动脚本
 quantum/               旧 CLI，不参与当前控制台
 ```
+
+本地测试：`python -m unittest discover -s tests`
 
 ## 注意
 
