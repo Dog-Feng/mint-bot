@@ -188,6 +188,30 @@
     th { color: var(--muted); font-weight: 500; }
     tr:last-child td { border-bottom: 0; }
     .mono { font-family: Consolas, "Courier New", monospace; word-break: break-all; }
+    .table-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 10px 0 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .table-scroll {
+      max-height: 280px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #141821;
+    }
+    .table-scroll.tall { max-height: 320px; }
+    .table-scroll table { margin: 0; }
+    .table-scroll thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #1b2130;
+    }
+    .token-cell { max-width: 280px; word-break: break-all; }
 
     .report {
       display: grid;
@@ -493,7 +517,7 @@
 
         <div class="section">
           <h2>归集预览 <span id="sweepTag" class="pill">未预览</span></h2>
-          <div id="sweepBox"><div class="empty">选好转出范围后点「预览持仓」。链上扫描只查当前所选链、该 NFT 合约下的持仓。</div></div>
+          <div id="sweepBox"><div class="empty">选好转出范围后点「预览持仓」。链上扫描只查当前所选链、该 NFT 合约下的持仓。钱包或转出较多时，列表在框内滚动，摘要留在上面。</div></div>
         </div>
 
         <div class="report">
@@ -1063,6 +1087,14 @@
       };
     }
 
+    function formatTokenIds(ids) {
+      const list = (ids || []).map(String);
+      if (!list.length) return { text: "", title: "" };
+      const shown = list.slice(0, 6).join(", ");
+      const text = list.length > 6 ? `${shown} … 共 ${list.length} 枚` : shown;
+      return { text, title: list.join(", ") };
+    }
+
     function renderSweepPreview(data) {
       const warn = data.dest_is_source
         ? `<div class="hint" style="color:var(--warn)">目标地址也在源钱包列表里。转给自己可以，但起不到归集效果。</div>`
@@ -1072,19 +1104,22 @@
       const rows = data.wallets || [];
       const results = data.results || [];
       const resultTable = results.length ? `
-        <table style="margin-top:12px">
-          <thead><tr><th>钱包</th><th>token</th><th>状态</th><th>tx</th></tr></thead>
-          <tbody>
-            ${results.map((r) => `
-              <tr>
-                <td>${escapeHtml(r.label || "")}<div class="hint mono">${escapeHtml(r.address || "")}</div></td>
-                <td>${escapeHtml(r.token_id != null ? String(r.token_id) : "-")}</td>
-                <td class="status ${statusClass(r.status)}">${escapeHtml(r.status || "--")}</td>
-                <td class="mono">${escapeHtml(r.tx_hash || r.error || "-")}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
+        <div class="table-head"><span>转出明细</span><span>${results.length} 笔</span></div>
+        <div class="table-scroll tall">
+          <table>
+            <thead><tr><th>钱包</th><th>token</th><th>状态</th><th>tx</th></tr></thead>
+            <tbody>
+              ${results.map((r) => `
+                <tr>
+                  <td>${escapeHtml(r.label || "")}<div class="hint mono">${escapeHtml(r.address || "")}</div></td>
+                  <td>${escapeHtml(r.token_id != null ? String(r.token_id) : "-")}</td>
+                  <td class="status ${statusClass(r.status)}">${escapeHtml(r.status || "--")}</td>
+                  <td class="mono">${escapeHtml(r.tx_hash || r.error || "-")}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
       ` : "";
       $("sweepBox").innerHTML = `
         <div class="kv">
@@ -1094,18 +1129,25 @@
           <b>范围</b><span>${escapeHtml(modeLabel)} · ${escapeHtml(data.standard || "")} · 可转 ${data.ready ?? 0} / 跳过 ${data.skipped ?? 0}</span>
         </div>
         ${warn}
-        <table style="margin-top:10px">
-          <thead><tr><th>钱包</th><th>将转出</th><th>状态</th></tr></thead>
-          <tbody>
-            ${rows.map((r) => `
-              <tr>
-                <td>${escapeHtml(r.label || "wallet")}<div class="hint mono">${escapeHtml(r.address || "")}</div></td>
-                <td>${escapeHtml((r.token_ids && r.token_ids.length) ? r.token_ids.join(", ") : (r.note || "-"))}</td>
-                <td class="status ${statusClass(r.status)}">${escapeHtml(r.status || "--")}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
+        <div class="table-head"><span>钱包持仓</span><span>${rows.length} 个钱包</span></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>钱包</th><th>将转出</th><th>状态</th></tr></thead>
+            <tbody>
+              ${rows.map((r) => {
+                const tokens = formatTokenIds(r.token_ids);
+                const cell = tokens.text || r.note || "-";
+                return `
+                <tr>
+                  <td>${escapeHtml(r.label || "wallet")}<div class="hint mono">${escapeHtml(r.address || "")}</div></td>
+                  <td class="token-cell" title="${escapeHtml(tokens.title || cell)}">${escapeHtml(cell)}</td>
+                  <td class="status ${statusClass(r.status)}">${escapeHtml(r.status || "--")}</td>
+                </tr>
+              `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
         ${resultTable}
       `;
       setPill("sweepTag", results.length ? "已归集" : "已预览", results.length ? "ok" : "ok");
