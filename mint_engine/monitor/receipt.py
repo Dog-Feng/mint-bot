@@ -41,7 +41,22 @@ def parse_token_ids(receipt: dict | None, recipient: str) -> list[int]:
     return token_ids
 
 
+def extract_revert_data(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in ("data", "reason", "message"):
+            found = extract_revert_data(value.get(key))
+            if found:
+                return found
+    return None
+
+
 def decode_revert(data: str | None) -> str | None:
+    data = extract_revert_data(data) or data
     if not data or data == "0x":
         return None
     raw = data[2:] if data.startswith("0x") else data
@@ -54,3 +69,76 @@ def decode_revert(data: str | None) -> str | None:
         except Exception:
             return data
     return data
+
+
+_SOLD_OUT_ERRORS = (
+    "SoldOut()",
+    "MintSoldOut()",
+    "MaxSupply()",
+    "MaxSupplyReached()",
+    "MaxSupplyExceeded()",
+    "ExceedsMaxSupply()",
+    "ExceedsSupply()",
+    "TotalSupplyExceeded()",
+    "InsufficientSupply()",
+    "NoSupplyLeft()",
+    "SupplyExceeded()",
+    "CapReached()",
+    "MintCap()",
+    "PublicSaleEnded()",
+    "SaleEnded()",
+)
+
+
+def _selector4(name: str) -> str:
+    digest = keccak(text=name).hex()
+    if digest.startswith("0x"):
+        digest = digest[2:]
+    return digest[:8].lower()
+
+
+_SOLD_OUT_SELECTORS = {_selector4(name) for name in _SOLD_OUT_ERRORS}
+
+
+def revert_blob(exc: Exception) -> str:
+    parts = [str(exc)]
+    from mint_engine.core.exceptions import EngineError
+
+    if isinstance(exc, EngineError):
+        details = exc.details or {}
+        data = extract_revert_data(details.get("data")) or details.get("data")
+        if data:
+            parts.append(str(data))
+            decoded = decode_revert(data if isinstance(data, str) else None)
+            if decoded:
+                parts.append(str(decoded))
+        if details.get("message"):
+            parts.append(str(details["message"]))
+        parts.append(str(details))
+    return " ".join(parts)
+
+
+def is_sold_out(text: str | None) -> bool:
+    blob = (text or "").lower()
+    if not blob:
+        return False
+    if any(sel in blob for sel in _SOLD_OUT_SELECTORS):
+        return True
+    compact = blob.replace(" ", "").replace("_", "").replace("-", "")
+    compact = compact.replace("presaleended", "").replace("alreadyminted", "").replace("alreadyclaimed", "")
+    return any(
+        needle in compact
+        for needle in (
+            "soldout",
+            "maxsupply",
+            "exceedssupply",
+            "exceedsmaxsupply",
+            "insufficientsupply",
+            "nosupplyleft",
+            "supplyexceeded",
+            "mintcap",
+            "capreached",
+            "publicsaleended",
+            "saleended",
+        )
+    )

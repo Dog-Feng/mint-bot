@@ -40,3 +40,31 @@ def is_rate_limited(exc: Exception) -> bool:
         return True
     text = str(exc).lower()
     return "429" in text or "rate limit" in text or "too many requests" in text or "exceeded its compute units" in text
+
+
+def is_execution_reverted(exc: Exception) -> bool:
+    if is_rate_limited(exc):
+        return False
+    if isinstance(exc, EngineError):
+        code = exc.details.get("code")
+        if code in (3, "3", -32015, "-32015"):
+            return True
+        data = exc.details.get("data")
+        if isinstance(data, str) and data.startswith("0x") and len(data) >= 10:
+            return True
+        blob = " ".join(
+            str(part)
+            for part in (exc.message, exc.details.get("message"), data)
+            if part
+        ).lower()
+    else:
+        blob = str(exc).lower()
+    return any(
+        marker in blob
+        for marker in (
+            "execution reverted",
+            "vm execution",
+            "invalid opcode",
+            "out of gas",
+        )
+    )

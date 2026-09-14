@@ -19,11 +19,15 @@ from mint_engine.core.models import (
     WalletStatus,
 )
 from mint_engine.evm import checksum
-from mint_engine.monitor.receipt import decode_revert, parse_token_ids
-from mint_engine.rpc.pool import RpcPool
-from mint_engine.transaction.gas import quote_gas, resolve_gas_limit
+from mint_engine.monitor.receipt import decode_revert, is_sold_out, parse_token_ids, revert_blob
+from mint_engine.rpc.pool import RpcPool, short_rpc_url
+from mint_engine.transaction.gas import quote_gas
 from mint_engine.transaction.signer import sign_tx
 from mint_engine.wallet.manager import WalletManager
+
+
+class _SoldOut(Exception):
+    """Mint supply exhausted; unsent wallets should skip."""
 
 
 class MintController:
@@ -103,8 +107,9 @@ class MintController:
         wallet = self._pick_from(report, from_address)
         plan = self._build_plan(report, wallet.address)
         tx = {"from": wallet.address, "to": plan.to, "data": plan.data, "value": hex(plan.value)}
+        shard = self._shard_url_for(wallet.address)
         try:
-            await self.pool.eth_call(tx)
+            await self.pool.eth_call(tx, prefer=shard)
             simulation = {"ok": True, "message": "eth_call passed"}
         except EngineError as exc:
             revert = decode_revert(str(exc.details.get("data") if exc.details else "")) or exc.message
@@ -123,6 +128,32 @@ class MintController:
 
     def log(self, message: str) -> None:
         self.events.append(message)
+
+    def _concurrency(self) -> int:
+        return max(1, self.config.wallets.concurrency)
+
+    def _shard_urls(self, count: int) -> list[str]:
+        return self.pool.assign_shard_urls(count, self._concurrency())
+
+    def _shard_url_for(self, address: str) -> str | None:
+        wallets = self.wallets.wallets
+        urls = self._shard_urls(len(wallets)) if wallets else []
+        want = (address or "").lower()
+        for wallet, url in zip(wallets, urls):
+            if wallet.address.lower() == want:
+                return url
+        return urls[0] if urls else self.pool.primary_url
+
+    def _log_shards(self, wallets, urls: list[str], conc: int) -> None:
+        groups: dict[str, int] = {}
+        for url in urls:
+            groups[url] = groups.get(url, 0) + 1
+        self.log(f"SHARD concurrency={conc}/node nodes={len(groups)} wallets={len(wallets)}")
+        latency = {row.url: row.latency_ms for row in self.pool.results}
+        for url, n in groups.items():
+            ms = latency.get(url)
+            delay = f"{ms}ms" if ms is not None else "?"
+            self.log(f"  {short_rpc_url(url)} {delay} x{n}")
 
     async def mint(self) -> dict[str, Any]:
         dry = await self.dry_run()
@@ -144,17 +175,12 @@ class MintController:
         if not ready:
             raise ConfigError("no wallet with a private key")
 
+        conc = self._concurrency()
+        shard_urls = self._shard_urls(len(ready))
         start_time = self._resolve_start_time(report)
         if start_time:
             await self._wait_until(start_time - self.config.schedule.sign_lead_sec, "PREPARE")
-
-        self.log("PREPARING wallets")
-        prepared = await self._prepare_all(report, ready, attempt=0)
-        if not prepared:
-            raise ConfigError("all wallets failed to prepare")
-        self.log(f"READY {len(prepared)}/{len(ready)}")
-
-        if start_time:
+            self.log("T-20: skip mass pre-sign; each wallet will estimateGas+sign+send at T=0")
             await self._wait_until(start_time - self.config.schedule.final_check_lead_sec, "FINAL REFRESH")
             report = await self._refresh_report(report)
             if report.sale.status in {SaleStatus.ENDED, SaleStatus.SOLD_OUT}:
@@ -162,45 +188,70 @@ class MintController:
             if report.sale.start_time:
                 start_time = report.sale.start_time
             self._autofill_fee_recipient(report)
-            self.log("RE-SIGNING after final sale refresh")
-            prepared = await self._prepare_all(report, ready, attempt=0)
-            if not prepared:
-                raise ConfigError("all wallets failed to re-sign")
             await self._wait_until(start_time, "ARMED")
             report = await self._refresh_report(report)
-            self.log("LIVE estimateGas+20% at T=0")
-            live = await self._prepare_all(report, ready, attempt=0)
-            if live:
-                prepared = live
+            if report.sale.status in {SaleStatus.ENDED, SaleStatus.SOLD_OUT}:
+                raise ConfigError(f"sale became {report.sale.status.value} before launch")
 
-        self.log("BLAST multi-RPC")
+        self.log("BLAST sign-and-send per wallet")
+        self._log_shards(ready, shard_urls, conc)
+        quote = await quote_gas(self.pool, self.config.gas, attempt=0)
         launch = time.perf_counter()
-        sem = asyncio.Semaphore(max(1, self.config.wallets.concurrency))
+        sems = {url: asyncio.Semaphore(conc) for url in dict.fromkeys(shard_urls)}
+        stop = asyncio.Event()
         results = []
 
-        async def run_one(item: dict[str, Any]):
-            async with sem:
-                return await self._mint_with_retry(report, item)
+        def note_sold_out(source: str, detail: str) -> None:
+            if not self.config.wallets.stop_on_sold_out:
+                return
+            if stop.is_set():
+                return
+            stop.set()
+            self.log(f"[SOLD_OUT] {source} {detail}; skip wallets that have not sent")
 
-        for item in await asyncio.gather(*(run_one(p) for p in prepared), return_exceptions=True):
+        async def run_one(wallet, rpc_url: str):
+            if self.config.wallets.stop_on_sold_out and stop.is_set():
+                return self._skip_unsent(report, wallet, "sold out, not sent")
+            async with sems[rpc_url]:
+                if self.config.wallets.stop_on_sold_out and stop.is_set():
+                    return self._skip_unsent(report, wallet, "sold out, not sent")
+                try:
+                    prepared = await self._prepare_wallet(report, wallet, quote, rpc_url=rpc_url)
+                except _SoldOut as exc:
+                    note_sold_out(wallet.address, str(exc))
+                    return self._skip_unsent(report, wallet, f"sold out, not sent ({exc})")
+                except Exception as exc:
+                    self.log(f"[PREPARE FAILED] {wallet.address} {exc}")
+                    return {
+                        "wallet": wallet.label,
+                        "address": wallet.address,
+                        "status": "ERROR",
+                        "error": str(exc),
+                    }
+                if self.config.wallets.stop_on_sold_out and stop.is_set():
+                    return self._skip_unsent(report, wallet, "sold out, not sent")
+                item = await self._mint_with_retry(report, prepared, stop=stop)
+                if item.get("sold_out"):
+                    note_sold_out(wallet.address, str(item.get("error") or "sold out"))
+                return item
+
+        for item in await asyncio.gather(
+            *(run_one(wallet, rpc_url) for wallet, rpc_url in zip(ready, shard_urls)),
+            return_exceptions=True,
+        ):
             if isinstance(item, Exception):
                 results.append({"status": "ERROR", "error": str(item)})
                 continue
             results.append(item)
-            if (
-                self.config.wallets.stop_on_sold_out
-                and item.get("status") == "REVERTED"
-                and "sold" in str(item.get("error", "")).lower()
-            ):
-                self.log("SOLD_OUT detected, remaining wallets will still finish in-flight sends")
 
         return {
             "report": report.model_dump(),
             "results": results,
             "events": self.events,
             "elapsed_sec": round(time.perf_counter() - launch, 3),
-            "prepared": len(prepared),
+            "prepared": len(ready),
             "success": sum(1 for row in results if row.get("status") == "SUCCESS"),
+            "skipped": sum(1 for row in results if row.get("status") == "SKIP"),
         }
 
     def _autofill_fee_recipient(self, report: InspectReport) -> None:
@@ -252,63 +303,85 @@ class MintController:
             )
         return report
 
-    async def _prepare_all(self, report: InspectReport, wallets, attempt: int) -> list[dict[str, Any]]:
-        quote = await quote_gas(self.pool, self.config.gas, attempt=attempt)
-        if wallets:
-            sample = self._build_plan(report, wallets[0].address)
-            quote["gas_limit"], source = await resolve_gas_limit(
-                self.pool,
-                {
-                    "from": sample.from_address,
-                    "to": sample.to,
-                    "data": sample.data,
-                    "value": hex(sample.value),
-                },
-                self.config.gas,
-                report.sale.status,
-            )
-            self.log(f"gasLimit={quote['gas_limit']} qty={self.config.mint.quantity} {source}")
-        prepared = []
-        for wallet in wallets:
-            try:
-                prepared.append(await self._prepare_wallet(report, wallet, quote))
-            except Exception as exc:
-                self.log(f"[PREPARE FAILED] {wallet.address} {exc}")
-        return prepared
-
     async def _prepare_wallet(
         self,
         report: InspectReport,
         wallet,
         quote: dict[str, int],
         nonce: int | None = None,
+        rpc_url: str | None = None,
     ) -> dict[str, Any]:
-        if nonce is None:
-            nonce = await self.pool.get_nonce(wallet.address, "pending")
         plan = self._build_plan(report, wallet.address)
+        if nonce is None:
+            nonce = await self.pool.get_nonce(wallet.address, "pending", prefer=rpc_url)
+        tx = {
+            "from": plan.from_address,
+            "to": plan.to,
+            "data": plan.data,
+            "value": hex(plan.value),
+        }
+        fallback = self.config.gas.fallback_gas_limit or 280000
+        if self.config.gas.gas_limit_mode == "fallback":
+            gas_limit, source = fallback, "forced fallback"
+        else:
+            try:
+                estimated = await self.pool.estimate_gas(tx, prefer=rpc_url)
+                gas_limit, source = max(int(estimated * 1.2), 21000), f"estimate {estimated}+20%"
+            except Exception as exc:
+                blob = revert_blob(exc)
+                if is_sold_out(blob) and self.config.wallets.stop_on_sold_out:
+                    raise _SoldOut(blob) from exc
+                why = report.sale.status.value if report.sale else "estimate failed"
+                gas_limit, source = fallback, f"fallback ({why})"
+        local_quote = dict(quote)
+        local_quote["gas_limit"] = gas_limit
         plan.nonce = nonce
-        plan.gas = quote["gas_limit"]
-        plan.max_fee_per_gas = quote["max_fee"]
-        plan.max_priority_fee_per_gas = quote["priority_fee"]
+        plan.gas = gas_limit
+        plan.max_fee_per_gas = local_quote["max_fee"]
+        plan.max_priority_fee_per_gas = local_quote["priority_fee"]
         raw, tx_hash = sign_tx(plan, wallet.private_key)
+        node = short_rpc_url(rpc_url or self.pool.primary_url or "")
         self.log(
             f"[SIGNED] {wallet.label} {wallet.address} nonce={nonce} "
-            f"gas={plan.gas} tip={plan.max_priority_fee_per_gas} tx={tx_hash}"
+            f"rpc={node} gas={plan.gas} ({source}) tip={plan.max_priority_fee_per_gas} tx={tx_hash}"
         )
         return {
             "wallet": wallet,
             "plan": plan,
             "raw": raw,
             "tx_hash": tx_hash,
-            "quote": quote,
+            "quote": local_quote,
+            "rpc_url": rpc_url,
         }
 
-    async def _mint_with_retry(self, report: InspectReport, prepared: dict[str, Any]) -> dict[str, Any]:
+    def _skip_unsent(self, report: InspectReport, wallet, why: str) -> dict[str, Any]:
+        return {
+            "wallet": wallet.label,
+            "address": wallet.address,
+            "method": report.method.signature if report.method else None,
+            "quantity": self.config.mint.quantity,
+            "tx_hash": None,
+            "status": "SKIP",
+            "sold_out": True,
+            "error": why,
+        }
+
+    async def _mint_with_retry(
+        self,
+        report: InspectReport,
+        prepared: dict[str, Any],
+        stop: asyncio.Event | None = None,
+    ) -> dict[str, Any]:
         wallet = prepared["wallet"]
         current = prepared
         last = None
         retries = self.config.gas.max_retries
         for attempt in range(retries + 1):
+            stopping = bool(stop and stop.is_set() and self.config.wallets.stop_on_sold_out)
+            if stopping and last is not None:
+                return last
+            if stopping:
+                return self._skip_unsent(report, wallet, "sold out, not sent")
             if attempt > 0:
                 self.log(f"[RETRY] {wallet.address} attempt {attempt + 1}/{retries + 1}")
                 quote = await quote_gas(
@@ -317,34 +390,56 @@ class MintController:
                     fallback_limit=current["quote"].get("gas_limit"),
                     attempt=attempt,
                 )
-                current = await self._prepare_wallet(
-                    report,
-                    wallet,
-                    quote,
-                    nonce=current["plan"].nonce,
-                )
-            last = await self._send_prepared(report, current)
+                try:
+                    current = await self._prepare_wallet(
+                        report,
+                        wallet,
+                        quote,
+                        nonce=current["plan"].nonce,
+                        rpc_url=current.get("rpc_url"),
+                    )
+                except _SoldOut as exc:
+                    return self._skip_unsent(report, wallet, f"sold out, not sent ({exc})")
+            last = await self._send_prepared(report, current, stop=stop)
             if last["status"] == "SUCCESS":
                 return last
+            if last.get("sold_out"):
+                return last
             if last["status"] == "TIMEOUT":
-                late = await self.pool.wait_receipt(current["tx_hash"], timeout=10)
+                late = await self.pool.wait_receipt(
+                    current["tx_hash"],
+                    timeout=10,
+                    prefer=current.get("rpc_url"),
+                )
                 if late:
-                    last = self._result_from_receipt(report, current, late, last.get("broadcasts") or [])
+                    last = await self._result_from_receipt(report, current, late, last.get("broadcasts") or [])
                     if last["status"] == "SUCCESS":
                         self.log(f"[LATE SUCCESS] {wallet.address} tx={last['tx_hash']}")
+                        return last
+                    if last.get("sold_out"):
                         return last
             if last["status"] not in {"SEND_FAILED", "TIMEOUT"}:
                 return last
         return last
 
-    async def _send_prepared(self, report: InspectReport, prepared: dict[str, Any]) -> dict[str, Any]:
+    async def _send_prepared(
+        self,
+        report: InspectReport,
+        prepared: dict[str, Any],
+        stop: asyncio.Event | None = None,
+    ) -> dict[str, Any]:
         wallet = prepared["wallet"]
-        broadcasts = await self.pool.broadcast(prepared["raw"])
+        if stop and stop.is_set() and self.config.wallets.stop_on_sold_out:
+            return self._skip_unsent(report, wallet, "sold out, not sent")
+        prefer = prepared.get("rpc_url")
+        broadcasts = await self.pool.broadcast(prepared["raw"], prefer=prefer)
         for row in broadcasts:
             if row.get("rate_limited"):
-                self.log(f"[RPC 429] {row.get('url')} 立即切换下一节点")
+                self.log(f"[RPC 429] {short_rpc_url(str(row.get('url') or ''))} 立即切换下一节点")
         sent = [row for row in broadcasts if row.get("ok")]
         if not sent:
+            blob = " ".join(str(row.get("error") or "") for row in broadcasts)
+            sold = is_sold_out(blob)
             self.log(f"[SEND_FAILED] {wallet.address}")
             return {
                 "wallet": wallet.label,
@@ -355,12 +450,17 @@ class MintController:
                 "status": "SEND_FAILED",
                 "broadcasts": broadcasts,
                 "gas_attempt": prepared["quote"].get("attempt", 0),
-                "error": "all RPC broadcasts failed",
+                "sold_out": sold,
+                "error": blob or "all RPC broadcasts failed",
             }
-        self.log(f"[SENT] {wallet.address} tx={prepared['tx_hash']} rpcs={len(sent)}")
+        sent_url = sent[0].get("url") or prefer
+        self.log(
+            f"[SENT] {wallet.address} tx={prepared['tx_hash']} rpc={short_rpc_url(str(sent_url or ''))}"
+        )
         receipt = await self.pool.wait_receipt(
             prepared["tx_hash"],
             timeout=self.config.gas.receipt_timeout_sec,
+            prefer=sent_url,
         )
         if receipt is None:
             return {
@@ -374,9 +474,27 @@ class MintController:
                 "gas_attempt": prepared["quote"].get("attempt", 0),
                 "error": "receipt timeout",
             }
-        return self._result_from_receipt(report, prepared, receipt, broadcasts)
+        return await self._result_from_receipt(report, prepared, receipt, broadcasts)
 
-    def _result_from_receipt(
+    async def _revert_reason(self, prepared: dict[str, Any]) -> str | None:
+        plan = prepared["plan"]
+        tx = {
+            "from": plan.from_address,
+            "to": plan.to,
+            "data": plan.data,
+            "value": hex(plan.value),
+        }
+        try:
+            await self.pool.eth_call(tx, prefer=prepared.get("rpc_url"))
+            return None
+        except Exception as exc:
+            data = None
+            if isinstance(exc, EngineError):
+                data = (exc.details or {}).get("data")
+            decoded = decode_revert(data)
+            return decoded or revert_blob(exc)
+
+    async def _result_from_receipt(
         self,
         report: InspectReport,
         prepared: dict[str, Any],
@@ -386,6 +504,11 @@ class MintController:
         wallet = prepared["wallet"]
         ok = _hex_int(receipt.get("status")) == 1
         token_ids = parse_token_ids(receipt, wallet.address) if ok else []
+        error = None
+        sold = False
+        if not ok:
+            error = await self._revert_reason(prepared) or "execution reverted"
+            sold = is_sold_out(error)
         return {
             "wallet": wallet.label,
             "address": wallet.address,
@@ -398,7 +521,8 @@ class MintController:
             "token_ids": token_ids,
             "broadcasts": broadcasts,
             "gas_attempt": prepared["quote"].get("attempt", 0),
-            "error": None if ok else "execution reverted",
+            "sold_out": sold,
+            "error": error,
         }
 
     async def _analyze(self) -> dict[str, Any]:
@@ -458,21 +582,27 @@ class MintController:
         raise ConfigError("dry run needs at least one wallet address")
 
     async def _wallet_states(self, sale, value: int) -> list[WalletReady]:
-        out = []
-        for wallet in self.wallets.wallets:
+        wallets = self.wallets.wallets
+        conc = self._concurrency()
+        shard_urls = self._shard_urls(len(wallets)) if wallets else []
+        sems = {url: asyncio.Semaphore(conc) for url in dict.fromkeys(shard_urls)} if shard_urls else {}
+
+        async def one(wallet, rpc_url: str | None) -> WalletReady:
             try:
-                balance = await self.pool.get_balance(wallet.address)
-                nonce = await self.pool.get_nonce(wallet.address, "pending")
+                if rpc_url and rpc_url in sems:
+                    async with sems[rpc_url]:
+                        balance = await self.pool.get_balance(wallet.address, prefer=rpc_url)
+                        nonce = await self.pool.get_nonce(wallet.address, "pending", prefer=rpc_url)
+                else:
+                    balance = await self.pool.get_balance(wallet.address)
+                    nonce = await self.pool.get_nonce(wallet.address, "pending")
             except Exception as exc:
-                out.append(
-                    WalletReady(
-                        label=wallet.label,
-                        address=wallet.address,
-                        status=WalletStatus.SKIPPED,
-                        note=str(exc),
-                    )
+                return WalletReady(
+                    label=wallet.label,
+                    address=wallet.address,
+                    status=WalletStatus.SKIPPED,
+                    note=str(exc),
                 )
-                continue
             status = WalletStatus.READY
             note = None
             if not wallet.can_sign:
@@ -484,17 +614,22 @@ class MintController:
             if sale and sale.max_per_wallet is not None and sale.max_per_wallet < self.config.mint.quantity:
                 status = WalletStatus.WALLET_LIMIT
                 note = f"quantity {self.config.mint.quantity} > maxPerWallet {sale.max_per_wallet}"
-            out.append(
-                WalletReady(
-                    label=wallet.label,
-                    address=wallet.address,
-                    status=status,
-                    balance_wei=balance,
-                    nonce=nonce,
-                    note=note,
-                )
+            return WalletReady(
+                label=wallet.label,
+                address=wallet.address,
+                status=status,
+                balance_wei=balance,
+                nonce=nonce,
+                note=note,
             )
-        return out
+
+        if not wallets:
+            return []
+        return list(
+            await asyncio.gather(
+                *(one(wallet, url) for wallet, url in zip(wallets, shard_urls))
+            )
+        )
 
 
 def sale_unknown():

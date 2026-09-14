@@ -71,12 +71,13 @@ async def resolve_gas_limit(
     tx: dict[str, object],
     config: GasConfig,
     sale_status: SaleStatus | None = None,
+    prefer: str | None = None,
 ) -> tuple[int, str]:
     fallback = config.fallback_gas_limit or 280000
     if config.gas_limit_mode == "fallback":
         return fallback, "forced fallback"
     try:
-        estimated = await pool.estimate_gas(tx)
+        estimated = await pool.estimate_gas(tx, prefer=prefer)
         return max(int(estimated * 1.2), 21000), f"estimate {estimated}+20%"
     except Exception:
         why = sale_status.value if sale_status else "estimate failed"

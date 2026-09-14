@@ -316,6 +316,7 @@
             <div>
               <label>并发数</label>
               <input id="concurrency" type="number" min="1" value="5" />
+              <div class="hint">每个 RPC 同时发这么多个钱包。优先打延迟最低的节点；一组打满再分给下一节点。钱包多于「节点数×并发」时，多出来的在已用节点上排队。</div>
             </div>
             <div>
               <label>售罄后</label>
@@ -323,6 +324,7 @@
                 <option value="true" selected>停止未广播钱包</option>
                 <option value="false">继续发送剩余钱包</option>
               </select>
+              <div class="hint">任一钱包回执为 SoldOut 时，未发出的全部停发；已经 broadcast 的仍等回执。</div>
             </div>
           </div>
         </div>
@@ -1194,7 +1196,7 @@
       if (hint) {
         if (!state.inspected) hint.textContent = "解析 OpenSea 只回填链和合约。分析合约后即可启动。检测环境和 Dry Run 可选。";
         else if (!hasKey) hint.textContent = "合约已分析。填私钥后即可启动。";
-        else hint.textContent = "可以启动。发交易只用检测时选出的主 RPC，不会齐射到其它节点。";
+        else hint.textContent = "可以启动。T=0 各钱包在分片节点上估 gas、签名后立刻发送；回执确认后再发该节点下一钱包。";
       }
       syncSweepRunButton();
     }
@@ -1534,14 +1536,14 @@
       setPill("runPill", "运行中", "warn");
       setPill("phasePill", config.run.start_strategy === "scheduled" ? "等待开售" : "广播中", "warn");
       log(config.run.start_strategy === "scheduled"
-        ? "已提交启动：T-20s 预签名，T=0 用主 RPC 广播。请求会一直等到开售或回执。"
-        : "已提交立即启动：签名后立刻用主 RPC 广播。", "ok");
+        ? "已提交启动：等到开售后，各钱包在自己的分片节点上 estimateGas、签名并立刻广播。回执确认前该节点坑位不释放。请求会一直等到开售或回执。"
+        : "已提交立即启动：各钱包在分片节点上估 gas、签名后立刻广播。", "ok");
       document.querySelectorAll("#walletBody tr").forEach((tr) => {
         if (tr.dataset.status === "READY") tr.children[1].textContent = "running";
       });
       clearHeartbeat();
       state.heartbeat = setInterval(() => {
-        log("启动请求仍在等待服务端（预签名 / 开售 / 回执）…");
+        log("启动请求仍在等待服务端（开售 / 签名广播 / 回执）…");
       }, 15000);
       try {
         const data = await api("/api/run/start", config, { signal: state.abort.signal });
@@ -1549,9 +1551,10 @@
         (data.events || []).forEach((line) => log(line));
         applyMintResults(data.results || []);
         const success = data.success != null ? data.success : (data.results || []).filter((r) => r.status === "SUCCESS").length;
+        const skipped = data.skipped != null ? data.skipped : (data.results || []).filter((r) => r.status === "SKIP").length;
         setPill("runPill", success ? "已完成" : "结束", success ? "ok" : "danger");
         setPill("phasePill", success ? "mint 成功" : "mint 结束", success ? "ok" : "warn");
-        log(`启动结束：成功 ${success} / ${data.prepared || (data.results || []).length}，广播耗时 ${data.elapsed_sec ?? "--"}s。`, success ? "ok" : "warn");
+        log(`启动结束：成功 ${success} / ${data.prepared || (data.results || []).length}，跳过未发送 ${skipped}，广播耗时 ${data.elapsed_sec ?? "--"}s。`, success ? "ok" : "warn");
       } catch (err) {
         if (err.name === "AbortError") {
           setPill("runPill", "已断开", "danger");

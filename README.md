@@ -1,6 +1,6 @@
 # Mint Engine
 
-通用 EVM mint 控制台：手选链、分析合约、Dry Run，到点预签名后多 RPC 齐射。
+通用 EVM mint 控制台：手选链、分析合约、Dry Run，到点后按延迟分片，签完即发。
 
 没有统一的 `mint()`。链不会从地址猜。不绕过 allowlist，不伪造签名。当前适配 SeaDrop 与常见 Direct Mint。
 
@@ -25,16 +25,18 @@
         ↓
 Dry Run（eth_call，不广播）
         ↓
-启动：T-20s 预签名 → T-5s 刷新档期 → T=0 主 RPC 广播
+启动：T-5s 刷新档期 → T=0 各钱包在自己的分片节点上 estimateGas、签名并立刻广播；回执回来再发该节点下一钱包
         ↓
-回执 / Token IDs；SEND_FAILED 或 TIMEOUT 才加 gas 重试
+回执 / Token IDs；任一钱包回执、广播失败或 estimateGas 为 SoldOut 时，未发送的钱包全部 SKIP（页面「售罄后停止未广播钱包」）。已发出的仍等回执。SEND_FAILED 或 TIMEOUT 才加 gas 重试
 ```
 
 - 链必须手选。贴 OpenSea 链接可自动回填链和真实合约，但手选链必须与 OpenSea 链一致。
-- 填了「自有 RPC」：检测环境、分析、Dry Run、广播都打这些节点。测速选出主 RPC 后，发交易只打主节点；主节点 429 限流则立即切到下一个健康节点，不在原节点重试。实时 Gas 只用链上默认公开节点。未填自有 RPC 时，检测和发交易回退到公开节点。
-- 分析合约通过且已填私钥即可启动。检测环境和 Dry Run 可选。
+- 填了「自有 RPC」：测速按延迟排序。**并发数 = 每个节点同时飞行的钱包数**（含等回执）。钱包按组切分，优先填延迟最低的节点。合约分析、Dry Run `eth_call`、gas 单价只打一次（主节点/公开节点）。每个钱包的余额、nonce、`estimateGas`、广播、回执都走该钱包的分片节点。某节点 429 则切到延迟下一名，最后才绕回更快的节点。未填自有 RPC 时回退到公开节点。
+- 分析合约通过且已填私钥即可启动。检测环境和 Dry Run 可选。启动名单是「有私钥的钱包」，不按分析页的 READY 过滤。
 - `NOT_STARTED` 允许预约抢跑；`ENDED` / `SOLD_OUT` 拒绝发送。
 - 启动需要私钥。只填地址（40 位十六进制）只能分析。
+- 数量 `quantity` 写入**一笔** mint 的参数（例如 `mint(5)`），应付 `price × quantity`。每个钱包每轮只发这一笔，不是连发 5 笔。
+- 启动前不查「这个地址已经 mint 过几枚」。已打满再点启动仍会广播，链上一般 `AlreadyMinted` revert，只该钱包失败，不停其他人。总量售罄（`SoldOut` / `MaxSupply*`）才会 SKIP 未发送的钱包。`execution reverted` 会立刻失败，不再换遍所有 RPC 重试。
 
 ## Gas 怎么算
 
@@ -49,7 +51,7 @@ Dry Run（eth_call，不广播）
 ```text
 priority = 链上 tip + 额外 tip
 maxFee   = baseFee × 倍率 + priority
-gasLimit = estimateGas × 1.2（估失败则 280000）
+gasLimit = 该钱包自己的 estimateGas × 1.2（估失败则 280000）
 ```
 
 失败且状态为 `SEND_FAILED` / `TIMEOUT` 时，同 nonce 重签：`priority × 1.5^attempt`，倍率再乘 `1.25^attempt`。
