@@ -113,19 +113,7 @@ class SeaDropAdapter(MintAdapter):
         )
 
     def gaps(self, context: dict[str, Any], sale: SaleState) -> list[Gap]:
-        extra = context.get("extra_params") or {}
-        fees = sale.extra.get("fee_recipients") or []
-        chosen = extra.get("feeRecipient") or extra.get("fee_recipient")
         out = []
-        if sale.extra.get("restrict_fee_recipients") and not chosen:
-            out.append(
-                Gap(
-                    key="feeRecipient",
-                    message="SeaDrop 限制 feeRecipient，请确认使用哪个地址",
-                    blocking=True,
-                    candidates=fees,
-                )
-            )
         if sale.status == SaleStatus.SOLD_OUT:
             out.append(Gap(key="supply", message="已售罄", blocking=True))
         if sale.status == SaleStatus.ENDED:
@@ -133,9 +121,7 @@ class SeaDropAdapter(MintAdapter):
         return out
 
     def build_call(self, context: dict[str, Any], sale: SaleState, recipient: str) -> tuple[str, str, int]:
-        extra = context.get("extra_params") or {}
-        fees = sale.extra.get("fee_recipients") or []
-        fee = extra.get("feeRecipient") or extra.get("fee_recipient") or (fees[0] if fees else recipient)
+        fee = _seadrop_fee_recipient(sale)
         quantity = int(context["quantity"])
         data = encode_call(
             MINT_PUBLIC,
@@ -143,6 +129,17 @@ class SeaDropAdapter(MintAdapter):
             [checksum(context["contract"]), checksum(fee), checksum(recipient), quantity],
         )
         return SEADROP_V1, data, sale.price * quantity
+
+
+def _seadrop_fee_recipient(sale: SaleState) -> str:
+    """Project-configured SeaDrop fee payee; users do not choose this."""
+    fees = sale.extra.get("fee_recipients") or []
+    if fees:
+        return checksum(fees[0])
+    creator = sale.extra.get("creator_payout")
+    if creator:
+        return checksum(creator)
+    raise ValueError("SeaDrop fee recipient unavailable from chain")
 
 
 async def fetch_public_drop(pool: RpcPool, nft: str) -> dict | None:

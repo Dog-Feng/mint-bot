@@ -363,12 +363,6 @@
               <input id="recipient" placeholder="0x..." />
             </div>
           </div>
-          <div class="row">
-            <div>
-              <label>feeRecipient（可选，SeaDrop 未填则自动取第一项）</label>
-              <input id="feeRecipient" placeholder="0x..." />
-            </div>
-          </div>
           <div class="row two">
             <div>
               <label>ABI 来源</label>
@@ -769,8 +763,6 @@
         throw new Error("请填写合约地址或 OpenSea 链接。");
       }
       const extra = {};
-      const feeRecipient = $("feeRecipient").value.trim();
-      if (feeRecipient) extra.feeRecipient = feeRecipient;
       const startLocal = $("startTime").value;
       return {
         run: {

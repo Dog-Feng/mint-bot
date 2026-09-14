@@ -166,7 +166,6 @@ class MintController:
         if self.config.safety.dry_run_required and not dry["simulation"]["ok"]:
             if report.sale.status not in {SaleStatus.NOT_STARTED} and not dry["simulation"].get("expected"):
                 raise ConfigError(f"dry run failed: {dry['simulation']['message']}")
-        self._autofill_fee_recipient(report)
         if report.sale.max_per_wallet is not None and self.config.mint.quantity > report.sale.max_per_wallet:
             raise ConfigError(
                 f"quantity={self.config.mint.quantity} > maxPerWallet={report.sale.max_per_wallet}"
@@ -193,7 +192,6 @@ class MintController:
                 raise ConfigError(f"sale became {report.sale.status.value} before launch")
             if report.sale.start_time:
                 start_time = report.sale.start_time
-            self._autofill_fee_recipient(report)
             await self._wait_until(start_time, "ARMED")
             report = await self._refresh_report(report)
             if report.sale.status in {SaleStatus.ENDED, SaleStatus.SOLD_OUT}:
@@ -263,15 +261,6 @@ class MintController:
             "success": sum(1 for row in results if row.get("status") == "SUCCESS"),
             "skipped": sum(1 for row in results if row.get("status") == "SKIP"),
         }
-
-    def _autofill_fee_recipient(self, report: InspectReport) -> None:
-        extra = self.config.mint.extra_params
-        if extra.get("feeRecipient") or extra.get("fee_recipient"):
-            return
-        fees = (report.sale.extra or {}).get("fee_recipients") or []
-        if fees:
-            extra["feeRecipient"] = fees[0]
-            self.log(f"feeRecipient auto-selected {fees[0]}")
 
     def _resolve_start_time(self, report: InspectReport) -> int | None:
         start = report.sale.start_time or self.config.schedule.start_time_unix
