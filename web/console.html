@@ -335,7 +335,7 @@
             <div>
               <label>OpenSea 链接（可选，会自动填链和合约）</label>
               <input id="openseaUrl" placeholder="https://opensea.io/collection/qft-quantum-echoes" />
-              <div class="hint">需要后端 + OPENSEA_API_KEY。解析后覆盖当前链和合约地址。</div>
+              <div class="hint">需要后端 + OPENSEA_API_KEY。解析后覆盖链/合约；多阶段 drop 自动跟当前轮（预售→OpenSea mint，公开→mintPublic）。</div>
             </div>
           </div>
           <div class="row">
@@ -964,7 +964,9 @@
           <b>ABI 来源</b><span>${escapeHtml(report.abi_source || "--")}</span>
           <b>ABI 函数</b><span>${report.abi_function_count || 0} 个</span>
           <b>协议</b><span>${escapeHtml(report.protocol || "--")}</span>
-          <b>方法</b><span class="mono">${escapeHtml(method ? method.signature : "未识别")}</span>
+          <b>Mint 路径</b><span>${escapeHtml(report.mint_route === "opensea_drop" ? "OpenSea mint API" : "链上 mintPublic / Direct")}</span>
+          <b>当前阶段（自动）</b><span>${escapeHtml((report.drop_stage && (report.drop_stage.label || report.drop_stage.stage_type)) || "--")}</span>
+          <b>方法</b><span class="mono">${escapeHtml(report.mint_route === "opensea_drop" ? "POST /api/v2/drops/{slug}/mint" : (method ? method.signature : "未识别"))}</span>
           <b>开始</b><span>${escapeHtml(formatLocal(sale.start_time))}</span>
           <b>结束</b><span>${escapeHtml(formatLocal(sale.end_time))}</span>
           <b>钱包上限</b><span>${sale.max_per_wallet != null ? sale.max_per_wallet : "--"}</span>

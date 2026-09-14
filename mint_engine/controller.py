@@ -19,6 +19,12 @@ from mint_engine.core.models import (
     WalletStatus,
 )
 from mint_engine.evm import checksum
+from mint_engine.discovery.opensea_mint import build_drop_mint_transaction
+from mint_engine.discovery.opensea_stages import (
+    resolve_drop_stage,
+    sale_from_stage,
+    use_chain_public_mint,
+)
 from mint_engine.monitor.receipt import decode_revert, is_sold_out, parse_token_ids, revert_blob
 from mint_engine.rpc.pool import RpcPool, short_rpc_url
 from mint_engine.transaction.gas import quote_gas, worst_case_gas_reserve_wei
@@ -54,12 +60,14 @@ class MintController:
     async def inspect(self) -> InspectReport:
         rpc = await self.pool.probe()
         analysis = await self._analyze()
-        sale = analysis.get("sale")
         method = analysis.get("method")
+        chain_sale = analysis.get("sale")
+        sale, mint_route, stage_dict, stage_notes = await self._effective_sale(chain_sale, analysis)
         quantity = self.config.mint.quantity
         value = (sale.price * quantity) if sale else 0
         gas_reserve = await worst_case_gas_reserve_wei(self.pool, self.config.gas)
         wallets = await self._wallet_states(sale, value, gas_reserve)
+        notes = (analysis.get("notes") or []) + self._opensea_notes(chain_sale) + stage_notes
         report = InspectReport(
             chain_id=self.chain.chain_id,
             chain_name=self.chain.name,
@@ -83,8 +91,10 @@ class MintController:
             gaps=analysis.get("gaps") or [],
             wallets=wallets,
             rpc=rpc,
-            notes=(analysis.get("notes") or []) + self._opensea_notes(sale),
+            notes=notes,
             opensea=self.opensea,
+            mint_route=mint_route,
+            drop_stage=stage_dict,
         )
         return report
 
@@ -103,10 +113,23 @@ class MintController:
 
     async def dry_run(self, from_address: str | None = None) -> dict[str, Any]:
         report = await self.inspect()
-        if not report.method:
-            raise ConfigError("no mint method detected")
         wallet = self._pick_from(report, from_address)
-        plan = self._build_plan(report, wallet.address)
+        try:
+            plan = await self._build_mint_plan(report, wallet.address)
+        except EngineError as exc:
+            expected = report.sale.status in {SaleStatus.NOT_STARTED, SaleStatus.ENDED, SaleStatus.SOLD_OUT}
+            return {
+                "report": report.model_dump(),
+                "plan": None,
+                "simulation": {
+                    "ok": False,
+                    "expected": expected,
+                    "message": exc.message,
+                    "sale_status": report.sale.status,
+                },
+            }
+        if report.mint_route != "opensea_drop" and not report.method:
+            raise ConfigError("no mint method detected")
         tx = {"from": wallet.address, "to": plan.to, "data": plan.data, "value": hex(plan.value)}
         shard = self._shard_url_for(wallet.address)
         try:
@@ -161,7 +184,7 @@ class MintController:
         report = InspectReport.model_validate(dry["report"])
         if report.sale.status in {SaleStatus.ENDED, SaleStatus.SOLD_OUT}:
             raise ConfigError(f"refusing to mint: {report.sale.status.value}")
-        if report.capability == Capability.UNSUPPORTED:
+        if report.capability == Capability.UNSUPPORTED and report.mint_route != "opensea_drop":
             raise ConfigError("capability UNSUPPORTED")
         if self.config.safety.dry_run_required and not dry["simulation"]["ok"]:
             if report.sale.status not in {SaleStatus.NOT_STARTED} and not dry["simulation"].get("expected"):
@@ -293,13 +316,19 @@ class MintController:
 
     async def _refresh_report(self, report: InspectReport) -> InspectReport:
         analysis = await self._analyze()
-        sale = analysis.get("sale")
-        if sale:
-            report.sale = sale
-            report.value = sale.price * self.config.mint.quantity
-            self.log(
-                f"sale refresh status={sale.status.value} start={sale.start_time} price={sale.price}"
-            )
+        chain_sale = analysis.get("sale")
+        sale, mint_route, stage_dict, stage_notes = await self._effective_sale(chain_sale, analysis)
+        report.sale = sale
+        report.value = sale.price * self.config.mint.quantity
+        report.mint_route = mint_route
+        report.drop_stage = stage_dict
+        for note in stage_notes:
+            if note not in report.notes:
+                report.notes.append(note)
+        self.log(
+            f"sale refresh route={mint_route} status={sale.status.value} "
+            f"start={sale.start_time} price={sale.price}"
+        )
         return report
 
     async def _prepare_wallet(
@@ -310,7 +339,7 @@ class MintController:
         nonce: int | None = None,
         rpc_url: str | None = None,
     ) -> dict[str, Any]:
-        plan = self._build_plan(report, wallet.address)
+        plan = await self._build_mint_plan(report, wallet.address)
         if nonce is None:
             nonce = await self.pool.get_nonce(wallet.address, "pending", prefer=rpc_url)
         tx = {
@@ -357,7 +386,7 @@ class MintController:
         return {
             "wallet": wallet.label,
             "address": wallet.address,
-            "method": report.method.signature if report.method else None,
+            "method": self._result_method(report),
             "quantity": self.config.mint.quantity,
             "tx_hash": None,
             "status": "SKIP",
@@ -443,7 +472,7 @@ class MintController:
             return {
                 "wallet": wallet.label,
                 "address": wallet.address,
-                "method": report.method.signature if report.method else None,
+                "method": self._result_method(report),
                 "quantity": self.config.mint.quantity,
                 "tx_hash": prepared["tx_hash"],
                 "status": "SEND_FAILED",
@@ -465,7 +494,7 @@ class MintController:
             return {
                 "wallet": wallet.label,
                 "address": wallet.address,
-                "method": report.method.signature if report.method else None,
+                "method": self._result_method(report),
                 "quantity": self.config.mint.quantity,
                 "tx_hash": prepared["tx_hash"],
                 "status": "TIMEOUT",
@@ -511,7 +540,7 @@ class MintController:
         return {
             "wallet": wallet.label,
             "address": wallet.address,
-            "method": report.method.signature if report.method else None,
+            "method": self._result_method(report),
             "quantity": self.config.mint.quantity,
             "tx_hash": prepared["tx_hash"],
             "status": "SUCCESS" if ok else "REVERTED",
@@ -533,6 +562,56 @@ class MintController:
             manual_abi=mint.abi.payload,
             require_manual=mint.abi.source.value == "manual" and mint.abi.payload is None,
             extra_params=mint.extra_params,
+        )
+
+    async def _effective_sale(self, chain_sale, analysis: dict[str, Any]):
+        notes: list[str] = []
+        meta = (analysis or {}).get("meta") or {}
+        total = meta.get("total_supply")
+        max_supply = meta.get("max_supply")
+        if not self.opensea or not self.opensea.stages:
+            return chain_sale or sale_unknown(), "chain_public", None, notes
+        now = await self.pool.get_block_timestamp()
+        stage = resolve_drop_stage(
+            self.opensea.stages,
+            now,
+            next_stage=self.opensea.next_stage,
+        )
+        if stage is None:
+            return chain_sale or sale_unknown(), "chain_public", None, notes
+        label = (stage.get("label") or stage.get("stage_type") or "stage").strip()
+        if use_chain_public_mint(stage):
+            notes.append(f"Drop 自动 [{label}]：链上公开轮 mintPublic")
+            return chain_sale or sale_unknown(), "chain_public", stage, notes
+        if not self.opensea.slug:
+            raise ConfigError("OpenSea drop slug missing for staged mint")
+        sale = sale_from_stage(stage, now, total_supply=total, max_supply=max_supply)
+        notes.append(
+            f"Drop 自动 [{label}]：OpenSea mint API（signed/预售轮，非 mintPublic）"
+        )
+        return sale, "opensea_drop", stage, notes
+
+    async def _build_mint_plan(self, report: InspectReport, recipient: str) -> TxPlan:
+        if report.mint_route == "opensea_drop":
+            return await self._plan_from_opensea(recipient)
+        return self._build_plan(report, recipient)
+
+    async def _plan_from_opensea(self, recipient: str) -> TxPlan:
+        if not self.opensea or not self.opensea.slug:
+            raise ConfigError("OpenSea drop slug is required for staged mint")
+        tx = await build_drop_mint_transaction(
+            self.opensea.slug,
+            recipient,
+            self.config.mint.quantity,
+            expected_chain_id=self.chain.chain_id,
+        )
+        return TxPlan(
+            to=checksum(tx["to"]),
+            data=str(tx["data"]),
+            value=int(tx["value"]),
+            gas=self.config.gas.fallback_gas_limit,
+            chain_id=self.chain.chain_id,
+            from_address=checksum(recipient),
         )
 
     def _build_plan(self, report: InspectReport, recipient: str) -> TxPlan:
@@ -569,6 +648,12 @@ class MintController:
 
     def _adapter_from_report(self, report: InspectReport):
         return report.protocol
+
+    def _result_method(self, report: InspectReport) -> str | None:
+        if report.mint_route == "opensea_drop":
+            slug = self.opensea.slug if self.opensea else "{slug}"
+            return f"OpenSea POST /drops/{slug}/mint"
+        return report.method.signature if report.method else None
 
     def _pick_from(self, report: InspectReport, from_address: str | None) -> WalletReady:
         if from_address:

@@ -39,6 +39,7 @@ Dry Run（eth_call，不广播）
 - 启动前不查「这个地址已经 mint 过几枚」。已打满再点启动仍会广播，链上一般 `AlreadyMinted` revert，只该钱包失败，不停其他人。总量售罄（`SoldOut` / `MaxSupply*` 等 custom error）才会 SKIP 未发送的钱包；售罄判断解析 revert 载荷前 4 字节，避免误伤。`execution reverted` 会立刻失败，不再换遍所有 RPC 重试。
 - 分析页钱包 ETH：`mint 应付 + gas_limit×maxFee`（与启动同套 Gas 配置；RPC 不可用时按配置兜底，约 1 gwei base + 额外 tip）。
 - Direct Mint 多参数（如 `deadline`、多个 `address`）需在 `mint.extra_params` 填写；分析 gaps 会提示。
+- OpenSea 多阶段 drop：**自动**跟当前阶段（跳过 `team` 轮）。未开始时按 **最早 upcoming** 预约；`next_stage` 仅在与该最早轮次一致时作确认，不会跳过更早的 GTD 等。进行中取 **开始最晚** 的一轮（PUBLIC 与 FCFS 重叠时整站走链上 **mintPublic**）→ 否则预售 **OpenSea mint API**（须 OpenSea 链接解析出 stages）。链上 ABI 失败时仍可走 OpenSea 预售路径启动。
 
 ## Gas 怎么算
 

@@ -89,6 +89,8 @@ class AbiConfig(BaseModel):
 
 
 class MintConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     contract: str | None = None
     opensea_url: str | None = None
     quantity: int = 1
@@ -285,3 +287,5 @@ class InspectReport(BaseModel):
     rpc: list[ProbeResult] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     opensea: OpenSeaPreview | None = None
+    mint_route: str = "chain_public"
+    drop_stage: dict[str, Any] | None = None
