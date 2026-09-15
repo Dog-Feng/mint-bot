@@ -350,6 +350,13 @@
               <input id="quantity" type="number" min="1" value="1" />
             </div>
             <div>
+              <label id="maxUnitPriceLabel">最高 mint 单价 (ETH)</label>
+              <input id="maxUnitPrice" type="text" inputmode="decimal" value="0" />
+              <div class="hint">强制规则：实际 mint 单价（tx.value÷数量）不得超过此值；防项目方临时改价。</div>
+            </div>
+          </div>
+          <div class="row two">
+            <div>
               <label>接收地址</label>
               <select id="recipientMode">
                 <option value="self" selected>每个钱包自己</option>
@@ -701,8 +708,20 @@
       return id === 4663 || chain.has_public_mempool === false;
     }
 
+    function chainSymbol() {
+      const id = Number($("chain").value);
+      return (CHAINS[id] && CHAINS[id].symbol) || "ETH";
+    }
+
+    function syncMaxUnitPriceLabel() {
+      const sym = chainSymbol();
+      const el = $("maxUnitPriceLabel");
+      if (el) el.textContent = `最高 mint 单价 (${sym})`;
+    }
+
     function applyChainDefaults() {
       $("chainId").value = $("chain").value;
+      syncMaxUnitPriceLabel();
       syncGasFieldsForChain();
     }
 
@@ -767,6 +786,7 @@
           contract: contract || null,
           opensea_url: openseaUrl || null,
           quantity: Number($("quantity").value || 1),
+          max_unit_price: String($("maxUnitPrice").value ?? "0").trim() || "0",
           recipient_mode: $("recipientMode").value,
           recipient: $("recipient").value.trim() || null,
           abi: {

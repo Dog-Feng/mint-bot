@@ -40,6 +40,7 @@ Dry Run（eth_call，不广播）
 - 分析页钱包 ETH：`mint 应付 + gas_limit×maxFee`（与启动同套 Gas 配置；RPC 不可用时按配置兜底，约 1 gwei base + 额外 tip）。
 - Direct Mint 多参数（如 `deadline`、多个 `address`）需在 `mint.extra_params` 填写；分析 gaps 会提示。
 - OpenSea 多阶段 drop：分析仍 **自动** 选当前展示阶段；**启动后** 每钱包按阶段序追逐资格（OpenSea 422 → 下一阶段）。展示规则：跳过 `team`、`next_stage` 与最早 upcoming 对齐；重叠窗 PUBLIC 走链上 **mintPublic**。须 OpenSea 链接解析 `stages`。
+- **Mint 单价上限**（强制）：控制台填「最高 mint 单价（随链 native）」；组 tx 后 `value÷quantity` 不得超过该值（wei 精确），否则拒绝广播（`PRICE_GUARD`）；Chase 下该钱包终止、不跳下一阶段。
 
 ## Gas 怎么算
 

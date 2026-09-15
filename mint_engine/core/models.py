@@ -89,6 +89,8 @@ class MintConfig(BaseModel):
     contract: str | None = None
     opensea_url: str | None = None
     quantity: int = 1
+    # native token per unit minted (e.g. ETH); parsed to wei in controller
+    max_unit_price: str = "0"
     recipient_mode: str = "self"
     recipient: str | None = None
     abi: AbiConfig = Field(default_factory=AbiConfig)

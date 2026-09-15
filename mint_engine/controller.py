@@ -8,6 +8,7 @@ from mint_engine.analyzer.contract_analyzer import ContractAnalyzer
 from mint_engine.config.chains import get_chain
 from mint_engine.core.exceptions import ConfigError, EngineError
 from mint_engine.chase import ChaseWallet, init_chase_wallets, is_public_final_stage
+from mint_engine.price_guard import PriceGuardError, enforce_price_guard, native_unit_to_wei
 from mint_engine.core.models import (
     Capability,
     InspectReport,
@@ -72,6 +73,7 @@ class MintController:
         gas_reserve = await worst_case_gas_reserve_wei(self.pool, self.config.gas)
         wallets = await self._wallet_states(sale, value, gas_reserve)
         notes = (analysis.get("notes") or []) + self._opensea_notes(chain_sale) + stage_notes
+        notes.extend(self._price_guard_notes(sale or sale_unknown()))
         report = InspectReport(
             chain_id=self.chain.chain_id,
             chain_name=self.chain.name,
@@ -122,6 +124,8 @@ class MintController:
             plan = await self._build_mint_plan(report, wallet.address)
         except EngineError as exc:
             expected = report.sale.status in {SaleStatus.NOT_STARTED, SaleStatus.ENDED, SaleStatus.SOLD_OUT}
+            if exc.code == "PRICE_GUARD":
+                expected = False
             return {
                 "report": report.model_dump(),
                 "plan": None,
@@ -403,6 +407,18 @@ class MintController:
                             note_sold_out,
                         )
                     chase_wallet.finish(item, str(item.get("status") or "ERROR"))
+                except PriceGuardError as exc:
+                    self.log(f"[PRICE_GUARD] {chase_wallet.label} {exc.message}")
+                    chase_wallet.finish(
+                        {
+                            "wallet": chase_wallet.label,
+                            "address": chase_wallet.address,
+                            "status": "ERROR",
+                            "error": exc.message,
+                            "chase_status": "PRICE_GUARD",
+                        },
+                        "PRICE_GUARD",
+                    )
                 except Exception as exc:
                     self.log(f"[CHASE] {chase_wallet.label} error {exc}")
                     chase_wallet.finish(
@@ -456,6 +472,15 @@ class MintController:
         except _SoldOut as exc:
             note_sold_out(wallet.address, str(exc))
             return self._skip_unsent(report, wallet, f"sold out, not sent ({exc})")
+        except PriceGuardError as exc:
+            self.log(f"[PRICE_GUARD] {wallet.address} {exc.message}")
+            return {
+                "wallet": wallet.label,
+                "address": wallet.address,
+                "status": "ERROR",
+                "error": exc.message,
+                "chase_status": "PRICE_GUARD",
+            }
         except Exception as exc:
             self.log(f"[PREPARE FAILED] {wallet.address} {exc}")
             return {
@@ -531,13 +556,21 @@ class MintController:
         if not self.opensea or not self.opensea.slug:
             raise ConfigError("OpenSea drop slug missing")
         try:
-            await build_drop_mint_transaction(
+            tx = await build_drop_mint_transaction(
                 self.opensea.slug,
                 address,
                 self.config.mint.quantity,
                 expected_chain_id=self.chain.chain_id,
             )
+            enforce_price_guard(
+                int(tx["value"]),
+                self.config.mint.quantity,
+                self._max_unit_price_wei(),
+                native_symbol=self.chain.native_symbol,
+            )
             return True
+        except PriceGuardError:
+            raise
         except EngineError as exc:
             if exc.code == "OPENSEA_NOT_ELIGIBLE":
                 return False
@@ -893,10 +926,41 @@ class MintController:
         )
         return sale, "opensea_drop", stage, notes
 
+    def _max_unit_price_wei(self) -> int:
+        return native_unit_to_wei(self.config.mint.max_unit_price)
+
+    def _price_guard_notes(self, sale) -> list[str]:
+        notes: list[str] = []
+        try:
+            cap = self._max_unit_price_wei()
+        except ConfigError as exc:
+            notes.append(f"价格上限配置无效：{exc.message}")
+            return notes
+        sym = self.chain.native_symbol
+        notes.append(
+            f"Mint 单价上限：{self.config.mint.max_unit_price.strip() or '0'} {sym}（强制）"
+        )
+        if sale and sale.price is not None and sale.price > cap:
+            notes.append(
+                f"当前分析单价超过上限（链上/OpenSea 展示价），mint 将被拒绝"
+            )
+        return notes
+
+    def _enforce_price_guard_on_plan(self, plan: TxPlan) -> None:
+        enforce_price_guard(
+            plan.value,
+            self.config.mint.quantity,
+            self._max_unit_price_wei(),
+            native_symbol=self.chain.native_symbol,
+        )
+
     async def _build_mint_plan(self, report: InspectReport, recipient: str) -> TxPlan:
         if report.mint_route == "opensea_drop":
-            return await self._plan_from_opensea(recipient)
-        return self._build_plan(report, recipient)
+            plan = await self._plan_from_opensea(recipient)
+        else:
+            plan = self._build_plan(report, recipient)
+        self._enforce_price_guard_on_plan(plan)
+        return plan
 
     async def _plan_from_opensea(self, recipient: str) -> TxPlan:
         if not self.opensea or not self.opensea.slug:
@@ -907,7 +971,7 @@ class MintController:
             self.config.mint.quantity,
             expected_chain_id=self.chain.chain_id,
         )
-        return TxPlan(
+        plan = TxPlan(
             to=checksum(tx["to"]),
             data=str(tx["data"]),
             value=int(tx["value"]),
@@ -915,6 +979,7 @@ class MintController:
             chain_id=self.chain.chain_id,
             from_address=checksum(recipient),
         )
+        return plan
 
     def _build_plan(self, report: InspectReport, recipient: str) -> TxPlan:
         if not report.method or not self._adapter_from_report(report):
