@@ -24,7 +24,11 @@ from mint_engine.core.models import (
 )
 from mint_engine.evm import checksum
 from mint_engine.discovery.opensea import fetch_drop_stages
-from mint_engine.discovery.opensea_mint import OpenSeaMintProbe, build_drop_mint_transaction
+from mint_engine.discovery.opensea_mint import (
+    OpenSeaMintProbe,
+    build_drop_mint_transaction,
+    mint_errors_indicate_drop_fully_sold_out,
+)
 from mint_engine.discovery.opensea_stages import (
     build_stage_sequence,
     drop_has_future_mint_window,
@@ -434,7 +438,9 @@ class MintController:
                                 label,
                                 mint_probe,
                                 ctx,
+                                report,
                                 skip_no_eligible,
+                                note_sold_out,
                             )
                             return
 
@@ -642,7 +648,13 @@ class MintController:
             if exc.code == "OPENSEA_NOT_ELIGIBLE":
                 return OpenSeaMintProbe(False, detail=detail, sold_out=False)
             if exc.code == "OPENSEA_SOLD_OUT":
-                return OpenSeaMintProbe(False, detail=detail, sold_out=True)
+                full = mint_errors_indicate_drop_fully_sold_out(detail)
+                return OpenSeaMintProbe(
+                    False,
+                    detail=detail,
+                    sold_out=True,
+                    drop_fully_sold_out=full,
+                )
             if exc.code == "OPENSEA_DROP_INACTIVE":
                 return OpenSeaMintProbe(None, detail=detail, sold_out=False)
             raise
@@ -654,7 +666,9 @@ class MintController:
         label: str,
         probe: OpenSeaMintProbe,
         ctx: ChaseContext,
+        report: InspectReport,
         skip_no_eligible,
+        note_sold_out,
     ) -> None:
         wallet = chase_wallet.wallet
         if probe.sold_out:
@@ -662,15 +676,10 @@ class MintController:
                 f"[CHASE] {wallet.label} OpenSea sold out [{label}]"
                 + (f": {probe.detail}" if probe.detail else "")
             )
-            if is_public_final_stage(stage):
+            if probe.drop_fully_sold_out or is_public_final_stage(stage):
+                note_sold_out("OpenSea", probe.detail or label)
                 chase_wallet.finish(
-                    {
-                        "wallet": wallet.label,
-                        "address": wallet.address,
-                        "status": "SKIP",
-                        "error": f"sold out [{label}]",
-                        "chase_status": "SOLD_OUT",
-                    },
+                    self._skip_unsent(report, wallet, probe.detail or "drop sold out"),
                     "SOLD_OUT",
                 )
                 return

@@ -1,4 +1,7 @@
-from mint_engine.discovery.opensea_mint import mint_errors_indicate_sold_out
+from mint_engine.discovery.opensea_mint import (
+    mint_errors_indicate_drop_fully_sold_out,
+    mint_errors_indicate_sold_out,
+)
 from mint_engine.discovery.opensea_stages import (
     eligibility_retry_window_open,
     sync_stage_times_in_sequence,
@@ -24,3 +27,8 @@ def test_sync_stage_times_by_uuid():
 def test_mint_errors_sold_out():
     assert mint_errors_indicate_sold_out("This drop is sold out")
     assert not mint_errors_indicate_sold_out("Wallet not eligible")
+
+
+def test_drop_fully_sold_out_message():
+    assert mint_errors_indicate_drop_fully_sold_out("Drop is fully minted out")
+    assert not mint_errors_indicate_drop_fully_sold_out("Wallet not eligible")

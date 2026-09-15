@@ -28,6 +28,16 @@ def mint_errors_indicate_sold_out(message: str) -> bool:
     return any(hint in lower for hint in _SOLD_OUT_HINTS)
 
 
+def mint_errors_indicate_drop_fully_sold_out(message: str) -> bool:
+    """Whole drop exhausted (not merely ineligible for one stage)."""
+    lower = (message or "").lower()
+    if "fully minted out" in lower:
+        return True
+    if "drop is fully" in lower or "drop fully" in lower:
+        return True
+    return "minted out" in lower and "drop" in lower
+
+
 @dataclass(frozen=True)
 class OpenSeaMintProbe:
     """ok: True=eligible, False=not eligible, None=inactive (retry soon)."""
@@ -35,6 +45,7 @@ class OpenSeaMintProbe:
     ok: bool | None
     detail: str = ""
     sold_out: bool = False
+    drop_fully_sold_out: bool = False
 
 
 def _parse_wei(value: str | int | None) -> int:
