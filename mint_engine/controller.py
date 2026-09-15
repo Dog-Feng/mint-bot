@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any
+
+_log = logging.getLogger("mint_engine")
 
 from mint_engine.analyzer.contract_analyzer import ContractAnalyzer
 from mint_engine.config.chains import get_chain
@@ -160,6 +163,7 @@ class MintController:
 
     def log(self, message: str) -> None:
         self.events.append(message)
+        _log.info("%s", message)
 
     def _concurrency(self) -> int:
         return max(1, self.config.wallets.concurrency)
