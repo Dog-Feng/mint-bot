@@ -35,4 +35,5 @@ uvicorn.run(
     reload=False,
     proxy_headers=True,
     forwarded_allow_ips="*",
+    access_log=False,
 )

@@ -10,7 +10,7 @@ _log = logging.getLogger("mint_engine")
 from mint_engine.analyzer.contract_analyzer import ContractAnalyzer
 from mint_engine.config.chains import get_chain
 from mint_engine.core.exceptions import ConfigError, EngineError
-from mint_engine.chase import ChaseWallet, init_chase_wallets, is_public_final_stage
+from mint_engine.chase import ChaseContext, ChaseWallet, init_chase_wallets, is_public_final_stage
 from mint_engine.price_guard import PriceGuardError, enforce_price_guard, native_unit_to_wei
 from mint_engine.core.models import (
     Capability,
@@ -23,14 +23,17 @@ from mint_engine.core.models import (
     WalletStatus,
 )
 from mint_engine.evm import checksum
-from mint_engine.discovery.opensea_mint import build_drop_mint_transaction
+from mint_engine.discovery.opensea import fetch_drop_stages
+from mint_engine.discovery.opensea_mint import OpenSeaMintProbe, build_drop_mint_transaction
 from mint_engine.discovery.opensea_stages import (
     build_stage_sequence,
     drop_has_future_mint_window,
+    eligibility_retry_window_open,
     resolve_drop_stage,
     sale_from_stage,
     stage_bounds,
     stage_window_open,
+    sync_stage_times_in_sequence,
     use_chain_public_mint,
 )
 from mint_engine.monitor.receipt import decode_revert, is_sold_out, parse_token_ids, revert_blob
@@ -269,9 +272,17 @@ class MintController:
 
         stop = asyncio.Event()
         analysis: dict[str, Any] | None = None
+        last_stage_sync_at = 0.0
         url_map = {
             w.address.lower(): url for w, url in zip(ready, self._shard_urls(len(ready)))
         }
+
+        async def maybe_sync_stages(*, force: bool = False) -> None:
+            nonlocal last_stage_sync_at
+            if not force and time.time() - last_stage_sync_at < 15:
+                return
+            last_stage_sync_at = time.time()
+            await self._sync_chase_stage_times(ctx)
 
         def note_sold_out(source: str, detail: str) -> None:
             if not self.config.wallets.stop_on_sold_out:
@@ -299,7 +310,7 @@ class MintController:
                     )
                 break
 
-            now = await self.pool.get_block_timestamp()
+            now = int(time.time())
             next_wake: int | None = None
             probe_batch: list[ChaseWallet] = []
 
@@ -323,7 +334,21 @@ class MintController:
                     probe_batch.append(chase_wallet)
 
             if next_wake is not None and not probe_batch:
+                await maybe_sync_stages(force=True)
+                now = int(time.time())
+                next_wake = None
+                for chase_wallet in list(ctx.active_wallets):
+                    stage = ctx.current_stage(chase_wallet)
+                    if stage is None:
+                        continue
+                    start, _ = stage_bounds(stage)
+                    if start and now < start:
+                        wake = int(start)
+                        next_wake = wake if next_wake is None else min(next_wake, wake)
+                if next_wake is None:
+                    continue
                 report = await self._wait_stage_schedule(next_wake, report)
+                await maybe_sync_stages(force=True)
                 analysis = None
                 continue
 
@@ -333,11 +358,20 @@ class MintController:
                         chase_wallet.finish(skip_no_eligible(chase_wallet), "NO_ELIGIBLE_STAGE")
                 break
 
+            await maybe_sync_stages()
             report = await self._refresh_report(report)
             if analysis is None:
                 analysis = await self._analyze()
             chain_sale = analysis.get("sale")
             meta = (analysis or {}).get("meta") or {}
+            if report.sale.status == SaleStatus.SOLD_OUT:
+                note_sold_out("refresh", "SOLD_OUT")
+                for chase_wallet in ctx.active_wallets:
+                    chase_wallet.finish(
+                        self._skip_unsent(report, chase_wallet.wallet, "sold out, not sent"),
+                        "skipped",
+                    )
+                break
             quote = await quote_gas(self.pool, self.config.gas, attempt=0)
             conc = self._concurrency()
             shard_urls = [u for u in url_map.values() if u]
@@ -366,29 +400,43 @@ class MintController:
                         probe = await self._probe_chain_eligible(
                             stage_report, wallet.address, rpc_url
                         )
+                        if probe is None:
+                            await asyncio.sleep(1)
+                            return
+                        if probe is False:
+                            self.log(f"[CHASE] {wallet.label} not eligible [{label}] -> next stage")
+                            if is_public_final_stage(stage):
+                                chase_wallet.finish(
+                                    {
+                                        "wallet": wallet.label,
+                                        "address": wallet.address,
+                                        "status": "SKIP",
+                                        "error": f"not eligible for public stage [{label}]",
+                                        "chase_status": "NOT_ELIGIBLE",
+                                    },
+                                    "NOT_ELIGIBLE",
+                                )
+                                return
+                            if not ctx.advance_stage(chase_wallet):
+                                chase_wallet.finish(
+                                    skip_no_eligible(chase_wallet), "NO_ELIGIBLE_STAGE"
+                                )
+                            return
                     else:
-                        probe = await self._probe_opensea_eligible(wallet.address)
-
-                    if probe is None:
-                        await asyncio.sleep(1)
-                        return
-                    if probe is False:
-                        self.log(f"[CHASE] {wallet.label} not eligible [{label}] -> next stage")
-                        if is_public_final_stage(stage):
-                            chase_wallet.finish(
-                                {
-                                    "wallet": wallet.label,
-                                    "address": wallet.address,
-                                    "status": "SKIP",
-                                    "error": f"not eligible for public stage [{label}]",
-                                    "chase_status": "NOT_ELIGIBLE",
-                                },
-                                "NOT_ELIGIBLE",
+                        mint_probe = await self._probe_opensea_mint(wallet.address)
+                        if mint_probe.ok is None:
+                            await asyncio.sleep(1)
+                            return
+                        if mint_probe.ok is False:
+                            await self._on_opensea_not_eligible(
+                                chase_wallet,
+                                stage,
+                                label,
+                                mint_probe,
+                                ctx,
+                                skip_no_eligible,
                             )
                             return
-                        if not ctx.advance_stage(chase_wallet):
-                            chase_wallet.finish(skip_no_eligible(chase_wallet), "NO_ELIGIBLE_STAGE")
-                        return
 
                     self.log(f"[CHASE] {wallet.label} eligible [{label}] -> mint")
                     if rpc_url and rpc_url in sems:
@@ -556,7 +604,21 @@ class MintController:
         await self._wait_until(start, "ARMED")
         return await self._refresh_report(report)
 
-    async def _probe_opensea_eligible(self, address: str) -> bool | None:
+    async def _sync_chase_stage_times(self, ctx: ChaseContext) -> None:
+        if not self.opensea or not self.opensea.slug:
+            return
+        try:
+            fresh = await fetch_drop_stages(self.opensea.slug)
+        except ConfigError as exc:
+            self.log(f"[CHASE] stage refresh skipped: {exc}")
+            return
+        self.opensea.stages = fresh
+        for label, old_start, new_start in sync_stage_times_in_sequence(ctx.sequence, fresh):
+            self.log(
+                f"[CHASE] stage [{label}] start moved {old_start or '?'} -> {new_start or '?'}"
+            )
+
+    async def _probe_opensea_mint(self, address: str) -> OpenSeaMintProbe:
         if not self.opensea or not self.opensea.slug:
             raise ConfigError("OpenSea drop slug missing")
         try:
@@ -572,15 +634,82 @@ class MintController:
                 self._max_unit_price_wei(),
                 native_symbol=self.chain.native_symbol,
             )
-            return True
+            return OpenSeaMintProbe(True)
         except PriceGuardError:
             raise
         except EngineError as exc:
+            detail = exc.message or ""
             if exc.code == "OPENSEA_NOT_ELIGIBLE":
-                return False
+                return OpenSeaMintProbe(False, detail=detail, sold_out=False)
+            if exc.code == "OPENSEA_SOLD_OUT":
+                return OpenSeaMintProbe(False, detail=detail, sold_out=True)
             if exc.code == "OPENSEA_DROP_INACTIVE":
-                return None
+                return OpenSeaMintProbe(None, detail=detail, sold_out=False)
             raise
+
+    async def _on_opensea_not_eligible(
+        self,
+        chase_wallet: ChaseWallet,
+        stage: dict[str, Any],
+        label: str,
+        probe: OpenSeaMintProbe,
+        ctx: ChaseContext,
+        skip_no_eligible,
+    ) -> None:
+        wallet = chase_wallet.wallet
+        if probe.sold_out:
+            self.log(
+                f"[CHASE] {wallet.label} OpenSea sold out [{label}]"
+                + (f": {probe.detail}" if probe.detail else "")
+            )
+            if is_public_final_stage(stage):
+                chase_wallet.finish(
+                    {
+                        "wallet": wallet.label,
+                        "address": wallet.address,
+                        "status": "SKIP",
+                        "error": f"sold out [{label}]",
+                        "chase_status": "SOLD_OUT",
+                    },
+                    "SOLD_OUT",
+                )
+                return
+            if not ctx.advance_stage(chase_wallet):
+                chase_wallet.finish(skip_no_eligible(chase_wallet), "NO_ELIGIBLE_STAGE")
+            return
+
+        wall = int(time.time())
+        retry_sec = self.config.schedule.eligibility_retry_sec
+        interval = max(0.1, float(self.config.schedule.eligibility_retry_interval_sec))
+        if eligibility_retry_window_open(stage, wall, retry_sec):
+            start, _ = stage_bounds(stage)
+            window_end = int(start or wall) + retry_sec
+            remaining = max(0, window_end - wall)
+            if time.time() - chase_wallet.last_probe_at >= interval:
+                chase_wallet.last_probe_at = time.time()
+                detail = f" ({probe.detail})" if probe.detail else ""
+                self.log(
+                    f"[CHASE] {wallet.label} not eligible [{label}]{detail}; "
+                    f"retry {remaining:.0f}s left in window"
+                )
+            await asyncio.sleep(interval)
+            return
+
+        self.log(f"[CHASE] {wallet.label} not eligible [{label}] -> next stage")
+        if is_public_final_stage(stage):
+            chase_wallet.finish(
+                {
+                    "wallet": wallet.label,
+                    "address": wallet.address,
+                    "status": "SKIP",
+                    "error": f"not eligible for public stage [{label}]",
+                    "chase_status": "NOT_ELIGIBLE",
+                },
+                "NOT_ELIGIBLE",
+            )
+            return
+        if not ctx.advance_stage(chase_wallet):
+            chase_wallet.finish(skip_no_eligible(chase_wallet), "NO_ELIGIBLE_STAGE")
 
     async def _probe_chain_eligible(
         self,

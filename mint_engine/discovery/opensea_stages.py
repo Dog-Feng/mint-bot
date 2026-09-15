@@ -206,6 +206,39 @@ def stage_index_in_sequence(sequence: list[dict[str, Any]], stage: dict[str, Any
     return 0
 
 
+def eligibility_retry_window_open(stage: dict[str, Any], wall_now: int, retry_sec: int) -> bool:
+    """True while wall clock is within [stage_start, stage_start + retry_sec)."""
+    if retry_sec <= 0:
+        return False
+    start, _ = stage_bounds(stage)
+    if not start:
+        return False
+    start_i = int(start)
+    return start_i <= wall_now < start_i + retry_sec
+
+
+def sync_stage_times_in_sequence(
+    sequence: list[dict[str, Any]],
+    fresh_stages: list[dict[str, Any]],
+) -> list[tuple[str, int | None, int | None]]:
+    """Update start/end on sequence entries matched by uuid. Returns (label, old_start, new_start)."""
+    by_uuid = {_stage_uuid(s): s for s in fresh_stages if _stage_uuid(s)}
+    changes: list[tuple[str, int | None, int | None]] = []
+    for stage in sequence:
+        fresh = by_uuid.get(_stage_uuid(stage))
+        if not fresh:
+            continue
+        old_start, _ = stage_bounds(stage)
+        for key in ("start_time", "startTime", "end_time", "endTime", "price", "max_per_wallet"):
+            if key in fresh and fresh.get(key) is not None:
+                stage[key] = fresh[key]
+        new_start, _ = stage_bounds(stage)
+        if old_start != new_start:
+            label = (stage.get("label") or stage.get("stage_type") or "?").strip()
+            changes.append((label, old_start, new_start))
+    return changes
+
+
 def stage_window_open(stage: dict[str, Any], now: int) -> bool:
     start, end = stage_bounds(stage)
     if start and now < start:

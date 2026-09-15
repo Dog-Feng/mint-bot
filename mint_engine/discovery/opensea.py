@@ -113,6 +113,24 @@ async def resolve_opensea(url_or_slug: str) -> OpenSeaPreview:
         )
 
 
+async def fetch_drop_stages(slug: str) -> list[dict]:
+    settings = get_settings()
+    if not settings.opensea_api_key:
+        raise ConfigError("OPENSEA_API_KEY is missing")
+    if not (slug or "").strip():
+        raise ConfigError("OpenSea drop slug is required")
+    headers = {
+        "x-api-key": settings.opensea_api_key,
+        "accept": "application/json",
+        "User-Agent": "mint-engine/0.1",
+    }
+    async with httpx.AsyncClient(timeout=20.0, headers=headers, follow_redirects=True) as client:
+        drop = await _get_optional(client, f"https://api.opensea.io/api/v2/drops/{slug.strip()}")
+    if not drop:
+        raise ConfigError(f"OpenSea drop not found: {slug}")
+    return list(drop.get("stages") or [])
+
+
 async def prepare_config(config: RunConfig) -> tuple[RunConfig, OpenSeaPreview | None]:
     contract = (config.mint.contract or "").strip()
     url = (config.mint.opensea_url or "").strip()

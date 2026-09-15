@@ -122,6 +122,8 @@ class ScheduleConfig(BaseModel):
     prepare_lead_sec: int = 60
     sign_lead_sec: int = 20
     final_check_lead_sec: int = 5
+    eligibility_retry_sec: int = 120
+    eligibility_retry_interval_sec: float = 1.0
 
 
 class SafetyConfig(BaseModel):

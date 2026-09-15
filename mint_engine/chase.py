@@ -19,6 +19,7 @@ class ChaseWallet:
     done: bool = False
     result: dict[str, Any] | None = None
     chase_status: str = "pending"
+    last_probe_at: float = 0.0
 
     @property
     def label(self) -> str:

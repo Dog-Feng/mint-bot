@@ -5,7 +5,36 @@ import httpx
 from mint_engine.config.chains import chain_id_from_opensea
 from mint_engine.config.settings import get_settings
 from mint_engine.core.exceptions import ConfigError, EngineError
+from dataclasses import dataclass
+
 from mint_engine.evm import checksum
+
+_SOLD_OUT_HINTS = (
+    "sold out",
+    "soldout",
+    "sold-out",
+    "max supply",
+    "maximum supply",
+    "fully minted",
+    "no remaining",
+    "no longer available",
+    "exceeds max",
+    "already minted the maximum",
+)
+
+
+def mint_errors_indicate_sold_out(message: str) -> bool:
+    lower = (message or "").lower()
+    return any(hint in lower for hint in _SOLD_OUT_HINTS)
+
+
+@dataclass(frozen=True)
+class OpenSeaMintProbe:
+    """ok: True=eligible, False=not eligible, None=inactive (retry soon)."""
+
+    ok: bool | None
+    detail: str = ""
+    sold_out: bool = False
 
 
 def _parse_wei(value: str | int | None) -> int:
@@ -56,7 +85,10 @@ async def build_drop_mint_transaction(
             message = "; ".join(errors) if isinstance(errors, list) else response.text[:300]
             code = "OPENSEA_MINT_ERROR"
             if response.status_code == 422:
-                code = "OPENSEA_NOT_ELIGIBLE"
+                if mint_errors_indicate_sold_out(message):
+                    code = "OPENSEA_SOLD_OUT"
+                else:
+                    code = "OPENSEA_NOT_ELIGIBLE"
             elif response.status_code == 409:
                 code = "OPENSEA_DROP_INACTIVE"
             raise EngineError(code, message or f"OpenSea mint HTTP {response.status_code}")
