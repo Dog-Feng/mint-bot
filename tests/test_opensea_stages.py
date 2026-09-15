@@ -2,6 +2,8 @@ import unittest
 
 from mint_engine.core.models import SaleStatus
 from mint_engine.discovery.opensea_stages import (
+    build_stage_sequence,
+    drop_has_future_mint_window,
     pick_auto_stage,
     resolve_drop_stage,
     sale_from_stage,
@@ -76,6 +78,22 @@ class TestOpenSeaStages(unittest.TestCase):
         ]
         picked = pick_auto_stage(stages, 10, next_stage={"uuid": "fcfs", "start_time": 500})
         self.assertEqual(picked["uuid"], "gtd")
+
+    def test_build_stage_sequence_sorted(self):
+        stages = [
+            _stage("FCFS", "signed_presale", 500, 900, uuid="fcfs"),
+            _stage("GTD", "signed_presale", 100, 200, uuid="gtd"),
+        ]
+        seq = build_stage_sequence(stages)
+        self.assertEqual([s["uuid"] for s in seq], ["gtd", "fcfs"])
+
+    def test_drop_has_future_mint_window(self):
+        stages = [
+            _stage("GTD", "signed_presale", 100, 200, uuid="gtd"),
+            _stage("PUBLIC", "public_sale", 500, 900, uuid="pub"),
+        ]
+        self.assertTrue(drop_has_future_mint_window(stages, 50))
+        self.assertFalse(drop_has_future_mint_window(stages, 950))
 
     def test_auto_overlap_prefers_later_start_public(self):
         stages = [

@@ -39,11 +39,6 @@ class RunMode(str, Enum):
     MINT = "mint"
 
 
-class StartStrategy(str, Enum):
-    IMMEDIATE = "immediate"
-    SCHEDULED = "scheduled"
-
-
 class AbiSource(str, Enum):
     AUTO = "auto"
     MANUAL = "manual"
@@ -120,7 +115,8 @@ class GasConfig(BaseModel):
 
 
 class ScheduleConfig(BaseModel):
-    start_time_unix: int | None = None
+    model_config = ConfigDict(extra="ignore")
+
     prepare_lead_sec: int = 60
     sign_lead_sec: int = 20
     final_check_lead_sec: int = 5
@@ -139,9 +135,10 @@ class ChainConfig(BaseModel):
 
 
 class RunMeta(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     name: str = "mint"
     mode: RunMode = RunMode.INSPECT
-    start_strategy: StartStrategy = StartStrategy.SCHEDULED
 
 
 class RunConfig(BaseModel):

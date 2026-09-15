@@ -402,20 +402,7 @@
             </div>
           </div>
           <div class="hint" id="gasHint">交易前对这一笔做 estimateGas，再加 20%。Robinhood 上 tip 和倍率锁定为 0，走链上最低价。重试次数仍可改。</div>
-          <div class="row two">
-            <div>
-              <label>启动策略</label>
-              <select id="startStrategy">
-                <option value="immediate">立即启动</option>
-                <option value="scheduled" selected>到点抢跑</option>
-              </select>
-            </div>
-            <div>
-              <label>开售时间（本地）</label>
-              <input id="startTime" type="datetime-local" />
-            </div>
-          </div>
-          <div class="hint" id="feeHint">单钱包预估将在检测后计算。</div>
+          <div class="hint" id="feeHint">单钱包预估将在检测后计算。多阶段 drop 启动后自动阶段追逐：无当前资格则等待下一阶段。</div>
         </div>
 
         <div class="section">
@@ -763,12 +750,10 @@
         throw new Error("请填写合约地址或 OpenSea 链接。");
       }
       const extra = {};
-      const startLocal = $("startTime").value;
       return {
         run: {
           name: "console",
           mode,
-          start_strategy: $("startStrategy").value,
         },
         chain: { chain_id: Number($("chain").value) },
         rpc: rpcConfig(),
@@ -791,9 +776,7 @@
           extra_params: extra,
         },
         gas: currentGasConfig(),
-        schedule: {
-          start_time_unix: startLocal ? Math.floor(new Date(startLocal).getTime() / 1000) : null,
-        },
+        schedule: {},
       };
     }
 
@@ -974,7 +957,6 @@
           <b>缺口</b><span class="${gaps.length ? "gap" : ""}">${escapeHtml(gapText)}</span>
         </div>
       `;
-      if (sale.start_time) $("startTime").value = toLocalInput(sale.start_time);
       const walletCount = Math.max((report.wallets || []).length, walletItems().length, 1);
       $("feeHint").textContent = `单钱包应付 ${formatEth(report.value)} ${symbol} + 现场 estimateGas+20% 的 gas；${walletCount} 个钱包按当前单价合计约 ${formatEth(report.value * walletCount)} ${symbol}（不含 gas）。`;
       (report.notes || []).forEach((note) => log(note, "warn"));
@@ -1237,11 +1219,6 @@
         };
         applyChainDefaults();
       }
-      const stage = data.opensea.next_stage;
-      if (stage && (stage.start_time || stage.startTime)) {
-        const local = toLocalInput(stage.start_time || stage.startTime);
-        if (local) $("startTime").value = local;
-      }
       state.inspected = false;
       state.dryRan = false;
     }
@@ -1387,9 +1364,8 @@
       $("quantity").value = "5";
       $("abiSource").value = "auto";
       $("abiJson").value = "";
-      $("startStrategy").value = "scheduled";
       refreshAbiStatus();
-      log("已填充 Quantum Echoes：Ethereum / 真实合约 / 到点抢跑。请自行粘贴私钥后再启动。", "ok");
+      log("已填充 Quantum Echoes：Ethereum / 真实合约。请自行粘贴私钥后再启动。", "ok");
     };
 
     $("btnProbe").onclick = async () => {
@@ -1519,25 +1495,18 @@
       } catch (err) {
         return log(err.message, "err");
       }
-      const startUnix = config.schedule.start_time_unix;
-      if (config.run.start_strategy === "scheduled" && startUnix && startUnix - Date.now() / 1000 > 180) {
-        const waitMin = Math.ceil((startUnix - Date.now() / 1000) / 60);
-        if (!confirm(`将按到点抢跑等待约 ${waitMin} 分钟，页面请求会一直挂起。确定启动？`)) return;
-      }
       state.running = true;
       state.abort = new AbortController();
       setBusy(true);
       setPill("runPill", "运行中", "warn");
-      setPill("phasePill", config.run.start_strategy === "scheduled" ? "等待开售" : "广播中", "warn");
-      log(config.run.start_strategy === "scheduled"
-        ? "已提交启动：等到开售后，各钱包在自己的分片节点上 estimateGas、签名并立刻广播。回执确认前该节点坑位不释放。请求会一直等到开售或回执。"
-        : "已提交立即启动：各钱包在分片节点上估 gas、签名后立刻广播。", "ok");
+      setPill("phasePill", "阶段追逐", "warn");
+      log("已提交启动：按阶段自动探测资格，有资格即 mint；无资格则等待下一阶段。请求会持续到全部钱包结束或售罄停发。", "ok");
       document.querySelectorAll("#walletBody tr").forEach((tr) => {
         if (tr.dataset.status === "READY") tr.children[1].textContent = "running";
       });
       clearHeartbeat();
       state.heartbeat = setInterval(() => {
-        log("启动请求仍在等待服务端（开售 / 签名广播 / 回执）…");
+        log("启动请求仍在等待服务端（阶段等待 / 资格探测 / 广播 / 回执）…");
       }, 15000);
       try {
         const data = await api("/api/run/start", config, { signal: state.abort.signal });

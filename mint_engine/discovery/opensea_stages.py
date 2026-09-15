@@ -178,6 +178,64 @@ def resolve_drop_stage(
     return pick_auto_stage(stages, now, next_stage=next_stage)
 
 
+def build_stage_sequence(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not stages:
+        return []
+    eligible = [s for s in stages if _auto_eligible(s)]
+    pool = eligible if eligible else list(stages)
+    seen: set[str] = set()
+    ordered: list[dict[str, Any]] = []
+    for stage in sorted(pool, key=lambda s: stage_bounds(s)[0] or 0):
+        uid = _stage_uuid(stage)
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        ordered.append(stage)
+    return ordered
+
+
+def stage_index_in_sequence(sequence: list[dict[str, Any]], stage: dict[str, Any] | None) -> int:
+    if not sequence:
+        return 0
+    if stage is None:
+        return 0
+    want = _stage_uuid(stage)
+    for index, item in enumerate(sequence):
+        if _stage_uuid(item) == want:
+            return index
+    return 0
+
+
+def stage_window_open(stage: dict[str, Any], now: int) -> bool:
+    start, end = stage_bounds(stage)
+    if start and now < start:
+        return False
+    if end and now > end:
+        return False
+    return True
+
+
+def next_stage_wake_time(stage: dict[str, Any], now: int) -> int | None:
+    start, end = stage_bounds(stage)
+    if end and now > end:
+        return None
+    if start and now < start:
+        return int(start)
+    return None
+
+
+def drop_has_future_mint_window(stages: list[dict[str, Any]], now: int) -> bool:
+    for stage in build_stage_sequence(stages):
+        start, end = stage_bounds(stage)
+        if start and now < start:
+            return True
+        if stage_status(stage, now) == SaleStatus.ACTIVE:
+            return True
+        if stage_status(stage, now) == SaleStatus.UNKNOWN and (start or end):
+            return True
+    return False
+
+
 def use_chain_public_mint(stage: dict[str, Any] | None) -> bool:
     if stage is None:
         return True
