@@ -1505,9 +1505,7 @@
         if (tr.dataset.status === "READY") tr.children[1].textContent = "running";
       });
       clearHeartbeat();
-      state.heartbeat = setInterval(() => {
-        log("启动请求仍在等待服务端（阶段等待 / 资格探测 / 广播 / 回执）…");
-      }, 15000);
+      log("启动请求已提交，等待服务端（阶段等待 / 资格探测 / 广播 / 回执）；长任务可能持续较久。", "ok");
       try {
         const data = await api("/api/run/start", config, { signal: state.abort.signal });
         if (data.report) renderInspect(data.report);
