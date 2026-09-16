@@ -1,3 +1,4 @@
+from mint_engine.discovery.opensea_http import loads_json
 from mint_engine.discovery.opensea_mint import (
     _mint_error_snippet,
     mint_errors_indicate_drop_fully_sold_out,
@@ -48,6 +49,11 @@ def test_sync_stage_times_by_uuid():
     changes = sync_stage_times_in_sequence(sequence, fresh)
     assert changes == [("A", 100, 500)]
     assert sequence[0]["start_time"] == 500
+
+
+def test_loads_json_bytes():
+    assert loads_json(b'{"a":1}') == {"a": 1}
+    assert loads_json(b"") == {}
 
 
 def test_mint_error_snippet_from_errors_list():

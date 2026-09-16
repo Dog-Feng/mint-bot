@@ -39,7 +39,7 @@ Dry Run（eth_call，不广播）
 - 启动前不查「这个地址已经 mint 过几枚」。已打满再点启动仍会广播，链上一般 `AlreadyMinted` revert，只该钱包失败，不停其他人。总量售罄（`SoldOut` / `MaxSupply*` 等 custom error）才会 SKIP 未发送的钱包；售罄判断解析 revert 载荷前 4 字节，避免误伤。`execution reverted` 会立刻失败，不再换遍所有 RPC 重试。
 - 分析页钱包 ETH：`mint 应付 + gas_limit×maxFee`（与启动同套 Gas 配置；RPC 不可用时按配置兜底，约 1 gwei base + 额外 tip）。
 - Direct Mint 多参数（如 `deadline`、多个 `address`）需在 `mint.extra_params` 填写；分析 gaps 会提示。
-- OpenSea 多阶段 drop：分析仍 **自动** 选当前展示阶段；**启动后** 每钱包按阶段序追逐资格（OpenSea 422 → 下一阶段；整 drop `fully minted out` 停 chase）。展示规则：跳过 `team`、`next_stage` 与最早 upcoming 对齐；`public_sale` 走链上 **mintPublic**（与 OpenSea /mint 分开）。须 OpenSea 链接解析 `stages`。后端 `schedule` 另有热路径、公开预签等默认值（见 [产品与配置方案.md](./产品与配置方案.md)），控制台 YAML 可不填。
+- OpenSea 多阶段 drop：分析仍 **自动** 选当前展示阶段；**启动后** 每钱包按阶段序追逐资格（OpenSea 422 → 下一阶段；整 drop `fully minted out` 停 chase）。展示规则：跳过 `team`、`next_stage` 与最早 upcoming 对齐；`public_sale` 走链上 **mintPublic**（与 OpenSea /mint 分开）。须 OpenSea 链接解析 `stages`。OpenSea HTTP 使用进程内 **连接池 + keep-alive**；T−20 PREPARE 会 **GET drop 预热**。后端 `schedule` 另有热路径、公开预签、OpenSea 超时/热窗重探等默认值（见 [产品与配置方案.md](./产品与配置方案.md)），控制台 YAML 可不填。
 - **Mint 单价上限**（强制）：控制台填「最高 mint 单价（随链 native）」；组 tx 后 `value÷quantity` 不得超过该值（wei 精确），否则拒绝广播（`PRICE_GUARD`）；Chase 下该钱包终止、不跳下一阶段。
 
 ## Gas 怎么算

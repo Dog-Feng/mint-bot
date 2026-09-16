@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -14,13 +15,21 @@ from mint_engine.controller import MintController
 from mint_engine.core.exceptions import EngineError
 from mint_engine.core.models import GasConfig, RunConfig, SweepRequest
 from mint_engine.discovery.opensea import prepare_config, resolve_opensea
+from mint_engine.discovery.opensea_http import close_opensea_client
 from mint_engine.rpc.pool import RpcPool
 from mint_engine.sweep import preview_sweep, run_sweep
 from mint_engine.transaction.gas import public_gas_snapshot, quote_gas
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 
-app = FastAPI(title="Mint Engine", version="0.1.0")
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    yield
+    await close_opensea_client()
+
+
+app = FastAPI(title="Mint Engine", version="0.1.0", lifespan=_app_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

@@ -24,6 +24,7 @@ from mint_engine.core.models import (
 )
 from mint_engine.evm import checksum
 from mint_engine.discovery.opensea import fetch_drop_stages
+from mint_engine.discovery.opensea_http import ensure_opensea_client, warm_opensea_drop
 from mint_engine.discovery.opensea_mint import (
     OpenSeaMintProbe,
     build_drop_mint_transaction,
@@ -200,6 +201,16 @@ class MintController:
             delay = f"{ms}ms" if ms is not None else "?"
             self.log(f"  {short_rpc_url(url)} {delay} x{n}")
 
+    async def _bind_opensea_http(self) -> None:
+        if not self.opensea or not self.opensea.slug:
+            return
+        sched = self.config.schedule
+        await ensure_opensea_client(
+            connect_timeout=float(sched.opensea_connect_timeout_sec),
+            read_timeout=float(sched.opensea_read_timeout_sec),
+            http2=bool(sched.opensea_http2),
+        )
+
     async def mint(self) -> dict[str, Any]:
         dry = await self.dry_run()
         report = InspectReport.model_validate(dry["report"])
@@ -231,6 +242,8 @@ class MintController:
         if self.config.rpc.probe_on_start:
             await self.pool.probe()
             self.log("RPC re-probe before launch")
+
+        await self._bind_opensea_http()
 
         self.log("STAGE CHASE: per-wallet stage eligibility, mint when eligible")
         launch = time.perf_counter()
@@ -293,6 +306,8 @@ class MintController:
                 return
             analysis = await self._analyze()
             cached_quote = await quote_gas(self.pool, self.config.gas, attempt=0)
+            if self.opensea and self.opensea.slug:
+                await warm_opensea_drop(self.opensea.slug)
             self.log("[HOT] PREPARE analysis+gas ready")
 
         async def on_public_presign(stage_start: int, launch_report: InspectReport) -> None:
@@ -342,9 +357,15 @@ class MintController:
                     cw.presigned = None
                     self.log(f"[PUBLIC] {cw.label} presign failed: {exc}")
 
-        async def maybe_sync_stages(*, force: bool = False) -> None:
+        async def maybe_sync_stages(*, force: bool = False, hot: bool = False) -> None:
             nonlocal last_stage_sync_at
-            if not force and time.time() - last_stage_sync_at < 15:
+            if hot:
+                min_gap = float(schedule.opensea_hot_stage_sync_sec)
+                if min_gap <= 0:
+                    return
+            else:
+                min_gap = 15.0
+            if not force and time.time() - last_stage_sync_at < min_gap:
                 return
             last_stage_sync_at = time.time()
             await self._sync_chase_stage_times(ctx)
@@ -595,7 +616,12 @@ class MintController:
                     else:
                         mint_probe = await self._probe_opensea_mint(wallet.address)
                         if mint_probe.ok is None:
-                            await asyncio.sleep(1)
+                            inactive_pause = (
+                                float(schedule.opensea_hot_inactive_probe_sec)
+                                if hot
+                                else 1.0
+                            )
+                            await asyncio.sleep(max(0.05, inactive_pause))
                             return
                         if mint_probe.ok is False:
                             await self._on_opensea_not_eligible(
@@ -607,6 +633,7 @@ class MintController:
                                 report,
                                 skip_no_eligible,
                                 note_sold_out,
+                                in_hot_window=hot,
                             )
                             return
                         opensea_plan = mint_probe.plan
@@ -665,6 +692,7 @@ class MintController:
                 if isinstance(item, Exception):
                     self.log(f"[CHASE] error {item}")
 
+            await maybe_sync_stages(hot=hot)
             await asyncio.sleep(0.05)
 
         results = [w.result for w in ctx.wallets if w.result]
@@ -864,6 +892,8 @@ class MintController:
         report: InspectReport,
         skip_no_eligible,
         note_sold_out,
+        *,
+        in_hot_window: bool = False,
     ) -> None:
         wallet = chase_wallet.wallet
         if probe.sold_out:
@@ -884,7 +914,11 @@ class MintController:
 
         wall = int(time.time())
         retry_sec = self.config.schedule.eligibility_retry_sec
-        interval = max(0.1, float(self.config.schedule.eligibility_retry_interval_sec))
+        sched = self.config.schedule
+        if in_hot_window and sched.opensea_hot_eligibility_retry_interval_sec > 0:
+            interval = max(0.1, float(sched.opensea_hot_eligibility_retry_interval_sec))
+        else:
+            interval = max(0.1, float(sched.eligibility_retry_interval_sec))
         if eligibility_retry_window_open(stage, wall, retry_sec):
             start, _ = stage_bounds(stage)
             window_end = int(start or wall) + retry_sec
