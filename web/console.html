@@ -164,6 +164,32 @@
     .btn-ok { background: var(--accent-2); color: #062019; font-weight: 700; }
     .btn-danger { background: #6d2f2f; color: #ffd8d8; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #moduleTreasury button.tr-action-off {
+      opacity: 0.45;
+      cursor: not-allowed;
+      filter: grayscale(0.25);
+    }
+    .tr-confirm-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(0, 0, 0, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .tr-confirm-box {
+      max-width: 420px;
+      width: 100%;
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    .tr-confirm-box p { margin: 0 0 16px; line-height: 1.5; }
+    .tr-confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
     .status { font-weight: 500; }
     .status.ok { color: var(--ok); }
@@ -754,7 +780,7 @@
           </div>
           <div class="actions-bar">
             <button type="button" class="btn-ghost" id="trBtnPreview">预览</button>
-            <button type="button" class="btn-ok" id="trBtnRun" disabled>确认执行</button>
+            <button type="button" class="btn-ok tr-action-off" id="trBtnRun" aria-disabled="true">确认执行</button>
           </div>
         </aside>
 
@@ -782,7 +808,7 @@
               <h2 style="margin:0">计划明细 <span class="pill" id="trPreviewPill">未预览</span></h2>
               <div class="tr-plan-actions" style="display:flex;gap:8px;flex-shrink:0">
                 <button type="button" class="btn-ghost" id="trBtnPreviewRight">预览</button>
-                <button type="button" class="btn-ok" id="trBtnRunRight" disabled title="须先预览且计划可执行">确认执行</button>
+                <button type="button" class="btn-ok tr-action-off" id="trBtnRunRight" aria-disabled="true" title="须先预览且计划可执行">确认执行</button>
               </div>
             </div>
             <div class="hint" style="margin:-4px 0 8px">链上转账请点「确认执行」，「查询余额」仅查余额、不会分发。</div>
@@ -795,6 +821,15 @@
             <div class="treasury-log" id="trLogBox"></div>
           </div>
         </main>
+      </div>
+      <div id="trConfirmBackdrop" class="tr-confirm-backdrop hidden" aria-modal="true" role="dialog">
+        <div class="tr-confirm-box">
+          <p id="trConfirmText">确认按当前预览计划执行链上转账？私钥将发送到本机后端签名。</p>
+          <div class="tr-confirm-actions">
+            <button type="button" class="btn-ghost" id="trConfirmCancel">取消</button>
+            <button type="button" class="btn-ok" id="trConfirmOk">确认执行</button>
+          </div>
+        </div>
       </div>
     </div>
     </div>
@@ -1983,12 +2018,37 @@
       let trActiveTab = "distribute";
       let trLastPreview = null;
       let trBusy = false;
+      let trRunLock = false;
+
+      function trConfirmRunDialog() {
+        return new Promise((resolve) => {
+          const bd = tr("trConfirmBackdrop");
+          if (!bd) {
+            resolve(window.confirm("确认按当前预览计划执行链上转账？私钥将发送到本机后端签名。"));
+            return;
+          }
+          bd.classList.remove("hidden");
+          const onOk = () => finish(true);
+          const onCancel = () => finish(false);
+          const finish = (val) => {
+            bd.classList.add("hidden");
+            tr("trConfirmOk").removeEventListener("click", onOk);
+            tr("trConfirmCancel").removeEventListener("click", onCancel);
+            resolve(val);
+          };
+          tr("trConfirmOk").addEventListener("click", onOk);
+          tr("trConfirmCancel").addEventListener("click", onCancel);
+        });
+      }
 
       function trSyncActionButtons() {
-        const runOff = trBusy || !trLastPreview?.can_run;
+        const runOff = trBusy || trRunLock || !trLastPreview?.can_run;
         ["trBtnRun", "trBtnRunRight"].forEach((id) => {
           const el = tr(id);
-          if (el) el.disabled = runOff;
+          if (!el) return;
+          el.disabled = false;
+          el.classList.toggle("tr-action-off", runOff);
+          el.setAttribute("aria-disabled", runOff ? "true" : "false");
         });
         ["trBtnPreview", "trBtnPreviewRight"].forEach((id) => {
           const el = tr(id);
@@ -2290,6 +2350,11 @@
       }
 
       async function trDoRun() {
+        trLog("收到「确认执行」点击。");
+        if (trRunLock) {
+          trLog("执行流程进行中，请勿重复点击。", "warn");
+          return;
+        }
         if (trBusy) {
           trLog("其他操作进行中，请稍候。", "warn");
           return;
@@ -2313,13 +2378,17 @@
             return;
           }
         }
-        if (!confirm("确认按当前预览计划执行链上转账？私钥将发送到本机后端签名。")) {
-          trLog("已取消执行。", "warn");
-          return;
-        }
-        trBusy = true;
+        trRunLock = true;
         trSyncActionButtons();
+        let confirmed = false;
         try {
+          confirmed = await trConfirmRunDialog();
+          if (!confirmed) {
+            trLog("已取消执行。", "warn");
+            return;
+          }
+          trBusy = true;
+          trSyncActionButtons();
           let body;
           let startPath;
           if (trActiveTab === "distribute") {
@@ -2368,15 +2437,29 @@
           clearHeartbeat();
           clearRunPoll();
           trBusy = false;
+          trRunLock = false;
           trSyncActionButtons();
         }
       }
 
-      tr("trBtnPreview").addEventListener("click", () => trDoPreview());
-      tr("trBtnRun").addEventListener("click", () => trDoRun());
-      tr("trBtnPreviewRight").addEventListener("click", () => trDoPreview());
-      tr("trBtnRunRight").addEventListener("click", () => trDoRun());
-      tr("trBtnBalance").addEventListener("click", () => trQueryBalances());
+      function trBindClick(id, fn) {
+        const el = tr(id);
+        if (!el) {
+          console.error("[treasury] missing button:", id);
+          return;
+        }
+        el.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          fn();
+        });
+      }
+
+      trBindClick("trBtnPreview", () => trDoPreview());
+      trBindClick("trBtnRun", () => trDoRun());
+      trBindClick("trBtnPreviewRight", () => trDoPreview());
+      trBindClick("trBtnRunRight", () => trDoRun());
+      trBindClick("trBtnBalance", () => trQueryBalances());
       trSyncChain();
       trLog("资金模块已加载 · Gas estimate×1.2 · 明细过多时在表格内滚动。", "ok");
     }

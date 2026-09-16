@@ -75,7 +75,7 @@ async def index():
     page = WEB_DIR / "console.html"
     if not page.exists():
         return {"ok": True, "service": "mint-engine"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/treasury")
@@ -84,7 +84,7 @@ async def treasury_page():
     page = WEB_DIR / "console.html"
     if not page.exists():
         raise HTTPException(status_code=404, detail="console page not found")
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/favicon.ico")
