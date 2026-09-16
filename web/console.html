@@ -778,7 +778,14 @@
             </div>
           </div>
           <div class="section" style="flex:1;display:flex;flex-direction:column;min-height:280px">
-            <h2>计划明细 <span class="pill" id="trPreviewPill">未预览</span></h2>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+              <h2 style="margin:0">计划明细 <span class="pill" id="trPreviewPill">未预览</span></h2>
+              <div class="tr-plan-actions" style="display:flex;gap:8px;flex-shrink:0">
+                <button type="button" class="btn-ghost" id="trBtnPreviewRight">预览</button>
+                <button type="button" class="btn-ok" id="trBtnRunRight" disabled title="须先预览且计划可执行">确认执行</button>
+              </div>
+            </div>
+            <div class="hint" style="margin:-4px 0 8px">链上转账请点「确认执行」，「查询余额」仅查余额、不会分发。</div>
             <div class="table-scroll tall" id="trPlanBox">
               <div class="empty">填写左侧表单后点「预览（演示）」查看模拟计划表。</div>
             </div>
@@ -1977,6 +1984,20 @@
       let trLastPreview = null;
       let trBusy = false;
 
+      function trSyncActionButtons() {
+        const runOff = trBusy || !trLastPreview?.can_run;
+        ["trBtnRun", "trBtnRunRight"].forEach((id) => {
+          const el = tr(id);
+          if (el) el.disabled = runOff;
+        });
+        ["trBtnPreview", "trBtnPreviewRight"].forEach((id) => {
+          const el = tr(id);
+          if (el) el.disabled = trBusy;
+        });
+        const bal = tr("trBtnBalance");
+        if (bal) bal.disabled = trBusy;
+      }
+
       function trLog(msg, cls = "") {
         const line = document.createElement("div");
         line.className = cls;
@@ -2014,9 +2035,9 @@
         });
         tr("trKpiNative").textContent = sym;
         trLastPreview = null;
-        tr("trBtnRun").disabled = true;
         tr("trPreviewPill").textContent = "未预览";
         tr("trPreviewPill").className = "pill";
+        trSyncActionButtons();
       }
 
       document.querySelectorAll("#moduleTreasury .treasury-tab").forEach((btn) => {
@@ -2028,8 +2049,8 @@
           tr("trPanelDistribute").classList.toggle("hidden", trActiveTab !== "distribute");
           tr("trPanelCollect").classList.toggle("hidden", trActiveTab !== "collect");
           trLastPreview = null;
-          tr("trBtnRun").disabled = true;
           tr("trPlanBox").innerHTML = '<div class="empty">切换模式后请重新预览。</div>';
+          trSyncActionButtons();
           trUpdateBalanceHint();
         });
       });
@@ -2158,12 +2179,17 @@
       }
 
       async function trQueryBalances() {
+        if (trBusy) {
+          trLog("其他操作进行中，请稍候再查余额。", "warn");
+          return;
+        }
         const keys = trPrivateKeysForBalance();
         if (!keys.length) {
           trLog(trActiveTab === "distribute" ? "请先填写源钱包私钥。" : "请先填写至少一个源钱包私钥。", "warn");
           return;
         }
-        tr("trBtnBalance").disabled = true;
+        trBusy = true;
+        trSyncActionButtons();
         tr("trBalancePill").textContent = "查询中…";
         tr("trBalancePill").className = "pill";
         try {
@@ -2177,7 +2203,8 @@
           tr("trBalancePill").className = "pill warn";
           trLog(err.message || String(err), "warn");
         } finally {
-          tr("trBtnBalance").disabled = false;
+          trBusy = false;
+          trSyncActionButtons();
         }
       }
 
@@ -2219,10 +2246,12 @@
       }
 
       async function trDoPreview() {
-        if (trBusy) return;
+        if (trBusy) {
+          trLog("其他操作进行中，请稍候再预览。", "warn");
+          return;
+        }
         trBusy = true;
-        tr("trBtnPreview").disabled = true;
-        tr("trBtnRun").disabled = true;
+        trSyncActionButtons();
         try {
           const path =
             trActiveTab === "distribute"
@@ -2236,7 +2265,6 @@
           trRenderPlan(data);
           tr("trPreviewPill").textContent = `已预览 · ${data.ready_count}/${data.total_count} 可执行`;
           tr("trPreviewPill").className = data.can_run ? "pill ok" : "pill warn";
-          tr("trBtnRun").disabled = !data.can_run;
           if (data.mode === "distribute") {
             const budget = data.budget || {};
             if (budget.message) {
@@ -2257,16 +2285,40 @@
           trLog(err.message || String(err), "warn");
         } finally {
           trBusy = false;
-          tr("trBtnPreview").disabled = false;
+          trSyncActionButtons();
         }
       }
 
       async function trDoRun() {
-        if (trBusy || !trLastPreview?.can_run) return;
-        if (!confirm("确认按当前预览计划执行链上转账？私钥将发送到本机后端签名。")) return;
+        if (trBusy) {
+          trLog("其他操作进行中，请稍候。", "warn");
+          return;
+        }
+        if (!trLastPreview) {
+          trLog("请先点「预览」生成计划后再执行。", "warn");
+          return;
+        }
+        if (!trLastPreview.can_run) {
+          trLog("当前预览不可执行（余额不足或无 READY 笔）。请调整参数后重新预览。", "warn");
+          return;
+        }
+        if (trActiveTab === "distribute") {
+          const plan = (trLastPreview.items || []).filter((r) => r.status === "READY");
+          if (!plan.length) {
+            trLog("没有 READY 计划项，请重新预览。", "warn");
+            return;
+          }
+          if (!trLastPreview.source_address) {
+            trLog("预览缺少源地址，请重新预览。", "warn");
+            return;
+          }
+        }
+        if (!confirm("确认按当前预览计划执行链上转账？私钥将发送到本机后端签名。")) {
+          trLog("已取消执行。", "warn");
+          return;
+        }
         trBusy = true;
-        tr("trBtnPreview").disabled = true;
-        tr("trBtnRun").disabled = true;
+        trSyncActionButtons();
         try {
           let body;
           let startPath;
@@ -2316,13 +2368,14 @@
           clearHeartbeat();
           clearRunPoll();
           trBusy = false;
-          tr("trBtnPreview").disabled = false;
-          tr("trBtnRun").disabled = !trLastPreview?.can_run;
+          trSyncActionButtons();
         }
       }
 
       tr("trBtnPreview").addEventListener("click", () => trDoPreview());
       tr("trBtnRun").addEventListener("click", () => trDoRun());
+      tr("trBtnPreviewRight").addEventListener("click", () => trDoPreview());
+      tr("trBtnRunRight").addEventListener("click", () => trDoRun());
       tr("trBtnBalance").addEventListener("click", () => trQueryBalances());
       trSyncChain();
       trLog("资金模块已加载 · Gas estimate×1.2 · 明细过多时在表格内滚动。", "ok");
