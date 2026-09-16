@@ -805,9 +805,9 @@
           </div>
           <div class="section" style="flex:1;display:flex;flex-direction:column;min-height:280px">
             <h2>计划明细 <span class="pill" id="trPreviewPill">未预览</span></h2>
-            <div class="hint" style="margin:-4px 0 8px">左侧「确认执行」会先按当前表单预览，通过后再发起链上分发。</div>
+            <div class="hint" style="margin:-4px 0 8px">「确认执行」按左侧表单金额与间隔直接发起链上转账；「预览计划」可选，用于估算余额与锁定各笔随机金额。</div>
             <div class="table-scroll tall" id="trPlanBox">
-              <div class="empty">填写左侧表单后点「确认执行」或「预览计划」。</div>
+              <div class="empty">填写左侧表单后点「确认执行」；需要看明细时可先「预览计划」。</div>
             </div>
           </div>
           <div class="section" style="flex:1;display:flex;flex-direction:column;min-height:140px">
@@ -818,7 +818,7 @@
       </div>
       <div id="trConfirmBackdrop" class="tr-confirm-backdrop hidden" aria-modal="true" role="dialog">
         <div class="tr-confirm-box">
-          <p id="trConfirmText">确认按当前预览计划执行链上转账？私钥将发送到本机后端签名。</p>
+          <p id="trConfirmText">确认按当前表单配置执行链上转账？私钥将发送到本机后端签名。</p>
           <div class="tr-confirm-actions">
             <button type="button" class="btn-ghost" id="trConfirmCancel">取消</button>
             <button type="button" class="btn-ok" id="trConfirmOk">确认执行</button>
@@ -1351,7 +1351,7 @@
         concurrency: cfg.concurrency,
         max_per_wallet: cfg.max_per_wallet,
         rpc_urls: parseLines($("rpcs").value),
-        wallets: walletItems().filter((w) => w.private_key),
+        wallets: walletItems().filter((w) => w.private_key || w.address),
         gas: currentGasConfig(),
       };
     }
@@ -1369,8 +1369,8 @@
       if (!isAddress(contract)) throw new Error("NFT 合约地址格式不对。");
       if (requireDest && !dest) throw new Error("归集目标必须是 0x 开头的 40 位地址。");
       if (mode === "manual" && !tokenIds.length) throw new Error("手动模式请填写 token ID。");
-      const sources = walletItems().filter((w) => w.private_key);
-      if (!sources.length) throw new Error("归集需要源钱包私钥。");
+      const sources = walletItems().filter((w) => w.private_key || w.address);
+      if (!sources.length) throw new Error("归集预览需要源钱包地址或私钥（仅预览可只填 0x 地址）。");
       const destLower = dest.toLowerCase();
       return {
         chain_id: Number($("chain").value),
@@ -2093,6 +2093,11 @@
           trLog("请填写归集目标地址。", "warn");
           return false;
         }
+        const modeAll = document.querySelector('input[name="trCollMode"]:checked').value === "all";
+        if (!modeAll && !(tr("trCollFixedAmt").value || "").trim()) {
+          trLog("指定数量模式下请填写归集数量。", "warn");
+          return false;
+        }
         return true;
       }
 
@@ -2414,34 +2419,6 @@
         trSyncActionButtons();
         try {
           const fp = trFormFingerprint();
-          const previewStale =
-            !trLastPreview || trPreviewFingerprint !== fp || !trLastPreview.can_run;
-          if (previewStale) {
-            trLog("正在根据当前表单预览（确认执行前必需）…");
-            trBusy = true;
-            trSyncActionButtons();
-            let data;
-            try {
-              data = await trFetchPreviewCore();
-            } catch (err) {
-              trLog(err.message || String(err), "warn");
-              return;
-            } finally {
-              trBusy = false;
-              trSyncActionButtons();
-            }
-            if (!data.can_run) {
-              trLog("预览结果不可执行，请调整金额/余额/目标后重试。", "warn");
-              return;
-            }
-          }
-          if (trActiveTab === "distribute") {
-            const plan = (trLastPreview.items || []).filter((r) => r.status === "READY");
-            if (!plan.length || !trLastPreview.source_address) {
-              trLog("预览数据异常，请重试。", "warn");
-              return;
-            }
-          }
           const confirmed = await trConfirmRunDialog();
           if (!confirmed) {
             trLog("已取消执行。", "warn");
@@ -2453,10 +2430,20 @@
           let startPath;
           if (trActiveTab === "distribute") {
             startPath = "/api/treasury/distribute/start";
-            body = trBuildDistributePayload({
-              execute_plan: (trLastPreview.items || []).filter((r) => r.status === "READY"),
-              preview_source_address: trLastPreview.source_address || null,
-            });
+            const distExtra = {};
+            if (
+              trLastPreview &&
+              trPreviewFingerprint === fp &&
+              trLastPreview.mode === "distribute" &&
+              trLastPreview.can_run
+            ) {
+              const plan = (trLastPreview.items || []).filter((r) => r.status === "READY");
+              if (plan.length && trLastPreview.source_address) {
+                distExtra.execute_plan = plan;
+                distExtra.preview_source_address = trLastPreview.source_address;
+              }
+            }
+            body = trBuildDistributePayload(distExtra);
           } else {
             startPath = "/api/treasury/collect/start";
             body = trBuildCollectPayload();
@@ -2524,7 +2511,7 @@
 
       trUpdateBalanceHint();
       trSyncChain();
-      trLog("资金模块已加载 · 左下角「确认执行」= 预览 + 链上分发。", "ok");
+      trLog("资金模块已加载 · 「确认执行」按表单直接链上转账；可选「预览计划」查余额/明细。", "ok");
       } catch (err) {
         console.error("[treasury] init failed", err);
       }

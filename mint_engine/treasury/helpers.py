@@ -142,6 +142,7 @@ async def send_native_transfer(
     *,
     nonce: int | None = None,
     wait_receipt: bool = True,
+    skip_balance_check: bool = False,
 ) -> dict[str, Any]:
     if value_wei <= 0:
         return {
@@ -156,17 +157,18 @@ async def send_native_transfer(
     chain = get_chain(pool.expected_chain_id)
     use_nonce = nonce if nonce is not None else await pool.get_nonce(wallet.address, "pending")
     gas_limit, quote, fee_wei = await quote_native_transfer(pool, wallet.address, dest, value_wei, gas)
-    balance = await pool.get_balance(wallet.address)
-    if balance < value_wei + fee_wei:
-        return {
-            "status": "INSUFFICIENT_BALANCE",
-            "error": f"need {wei_to_native_str(value_wei + fee_wei)} {chain.native_symbol}, "
-            f"have {wei_to_native_str(balance)}",
-            "tx_hash": None,
-            "value_wei": value_wei,
-            "balance_wei": balance,
-            "fee_wei": fee_wei,
-        }
+    if not skip_balance_check:
+        balance = await pool.get_balance(wallet.address)
+        if balance < value_wei + fee_wei:
+            return {
+                "status": "INSUFFICIENT_BALANCE",
+                "error": f"need {wei_to_native_str(value_wei + fee_wei)} {chain.native_symbol}, "
+                f"have {wei_to_native_str(balance)}",
+                "tx_hash": None,
+                "value_wei": value_wei,
+                "balance_wei": balance,
+                "fee_wei": fee_wei,
+            }
     plan = TxPlan(
         to=dest,
         data="0x",

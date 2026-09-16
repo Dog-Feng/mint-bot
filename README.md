@@ -77,7 +77,7 @@ mint 完成后，控制台「归集 NFT」把各源钱包里的 NFT 转到一个
 | 标准 | 自动 / ERC-721 / ERC-1155 |
 | 归集并发 | 不同源钱包并行；同一钱包多枚串行 |
 
-预览只问「这个源钱包在当前所选链上有没有该合约的 NFT」，不扫其他链。有则列出 token ID。扫描顺序：所选链 RPC 上的 `tokensOfOwner` / `walletOfOwner` → Enumerable → 该链浏览器持仓接口（Etherscan 带 `chainid` / Blockscout）→ 同链 Transfer 日志（按节点限制切块）。空钱包跳过。ERC-1155 只用本次结果或手动 ID。
+预览只问「这个源钱包在当前所选链上有没有该合约的 NFT」，不扫其他链；**预览可只填 0x 地址**（确认归集仍要私钥）。有则列出 token ID。扫描顺序：所选链 RPC 上的 `tokensOfOwner` / `walletOfOwner` → Enumerable → 链浏览器持仓 API（Etherscan `chainid` / Blockscout 系含 **Arc `explorer.arc.io`**）→ 同链 Transfer 日志（RPC 限流时可能失败，可改用手动 token ID）。空钱包跳过。ERC-1155 只用本次结果或手动 ID。
 
 ## 钱包分发（原生币）
 
@@ -87,8 +87,8 @@ mint 完成后，控制台「归集 NFT」把各源钱包里的 NFT 转到一个
 |---|---|
 | 余额查询 | 私钥 **一行一个**；查几个地址取决于行数（空行、`#` 注释忽略） |
 | 一对多分发 | 链上转出 **仅用源私钥框第一行**；多行只影响余额查询 |
-| 预览预算 | 随机各笔金额 + 各笔 gas 求和后须 ≤ 源余额，否则禁止执行（非「笔数×最高金额」保守估） |
-| 执行锁定 | 执行须带预览返回的 `execute_plan`（READY 项）与 `preview_source_address`；改第一行源私钥须重新预览 |
+| 预览（可选） | 「预览计划」会查源余额并估算各笔随机金额 + gas；余额不足时预览标记不可执行，**不影响**直接点「确认执行」 |
+| 确认执行 | 按表单 **金额区间（各目标随机一笔）** 与 **间隔** 直接发链上转账，执行前不再批量查余额；若刚预览且表单未改，可附带 `execute_plan` 锁定预览时的各笔金额 |
 | 后台任务 | `POST …/distribute/start` 或 `…/collect/start` + `client_id`；轮询 `GET /api/run/{run_id}`、心跳 `POST /api/run/heartbeat`（建议 ≤5s；服务端 stale **45s** 自动 cancel）；与 Mint 共用取消 `POST /api/run/cancel`。**同一浏览器仅一条 active run** |
 
 Gas：`estimateGas × 1.2`（与控制台 Gas 配置一致）。分发执行中可轮询日志（`live_events`）；取消或链上中断时未发出笔标记 `CANCELLED` / `ABORTED`。

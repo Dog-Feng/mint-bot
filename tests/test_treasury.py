@@ -5,6 +5,7 @@ from mint_engine.core.models import GasConfig, TreasuryDistributeRequest
 from mint_engine.treasury.distribute import (
     _append_unprocessed_results,
     _assert_preview_source,
+    _build_run_items_for_execute,
     _merge_execute_plan,
     _validate_amount_range,
 )
@@ -59,6 +60,42 @@ def test_assert_preview_source():
         _assert_preview_source(TreasuryDistributeRequest(**base), addr)
     req = TreasuryDistributeRequest(**base, preview_source_address=addr)
     _assert_preview_source(req, addr)
+
+
+def test_build_run_items_for_execute_from_form():
+    source = "0x00000000000000000000000000000000000000Aa"
+    req = TreasuryDistributeRequest(
+        chain_id=1,
+        source_private_key="0x" + "1" * 64,
+        targets=[
+            "0x0000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000002",
+        ],
+        amount_min="0.001",
+        amount_max="0.002",
+        gas=GasConfig(),
+    )
+    items = _build_run_items_for_execute(req, source)
+    assert len(items) == 2
+    assert all(row["status"] == "READY" for row in items)
+    assert all(row["amount_wei"] > 0 for row in items)
+
+
+def test_build_run_items_for_execute_locked_plan():
+    source = "0x00000000000000000000000000000000000000Aa"
+    req = TreasuryDistributeRequest(
+        chain_id=1,
+        source_private_key="0x" + "1" * 64,
+        amount_min="0.001",
+        amount_max="0.002",
+        execute_plan=[
+            {"index": 1, "to": "0x0000000000000000000000000000000000000001", "amount_wei": 42},
+        ],
+        gas=GasConfig(),
+    )
+    items = _build_run_items_for_execute(req, source)
+    assert len(items) == 1
+    assert items[0]["amount_wei"] == 42
 
 
 def test_merge_execute_plan():

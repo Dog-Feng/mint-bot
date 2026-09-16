@@ -123,39 +123,88 @@ def _format_collect_event(row: dict[str, Any], native_symbol: str) -> str:
     )
 
 
+def _build_collect_run_rows(
+    request: TreasuryCollectRequest,
+    wallets,
+    dest: str,
+) -> tuple[list[dict[str, Any]], str, int]:
+    mode = (request.mode or "fixed").lower()
+    if mode not in {"fixed", "all"}:
+        raise ConfigError("mode 必须是 fixed 或 all")
+    fixed_wei = 0
+    if mode == "fixed":
+        if not request.fixed_amount:
+            raise ConfigError("指定数量模式下请填写 fixed_amount")
+        fixed_wei = native_unit_to_wei(request.fixed_amount)
+        if fixed_wei <= 0:
+            raise ConfigError("归集数量必须大于 0")
+    items: list[dict[str, Any]] = []
+    for wallet in wallets:
+        if mode == "fixed":
+            value = fixed_wei
+            status = "READY"
+        else:
+            value = 0
+            status = "READY"
+        items.append(
+            {
+                "label": wallet.label,
+                "address": wallet.address,
+                "amount_wei": value,
+                "amount_native": wei_to_native_str(value) if value else "0",
+                "destination": dest,
+                "status": status,
+            }
+        )
+    return items, mode, fixed_wei
+
+
+async def _resolve_collect_amount_wei(
+    pool,
+    wallet,
+    dest: str,
+    mode: str,
+    fixed_wei: int,
+    gas,
+) -> int:
+    if mode == "fixed":
+        return fixed_wei
+    value, _fee, status = await _send_amount_for_wallet(pool, wallet, dest, mode, fixed_wei, gas)
+    if status != "READY" or value <= 0:
+        raise ConfigError(f"{wallet.label} 无法归集：{status}")
+    return value
+
+
 async def run_collect(
     request: TreasuryCollectRequest,
     *,
     cancel: asyncio.Event | None = None,
     event_sink: list[str] | None = None,
 ) -> dict[str, Any]:
-    preview = await preview_collect(request)
-    dest = preview["destination"]
-    mode = preview["collect_mode"]
-    fixed_wei = native_unit_to_wei(request.fixed_amount) if mode == "fixed" else 0
+    if not request.destination or not is_address(request.destination):
+        raise ConfigError("归集目标必须是有效的 0x 地址")
+    dest = checksum(request.destination)
+    chain = get_chain(request.chain_id)
     wallets = resolve_source_wallets(request.source_private_keys)
+    items, mode, fixed_wei = _build_collect_run_rows(request, wallets, dest)
     by_label = {w.label: w for w in wallets}
     pool = await open_pool(request.chain_id, request.rpc_urls)
     events: list[str] = []
     results: list[dict[str, Any]] = []
     sem = asyncio.Semaphore(max(1, request.concurrency))
-
-    sym = preview["native_symbol"]
+    sym = chain.native_symbol
     treasury_logger.info(
-        "collect run start chain_id=%s dest=%s ready=%s concurrency=%s",
+        "collect run start chain_id=%s dest=%s wallets=%s concurrency=%s mode=%s",
         request.chain_id,
         dest,
-        preview["ready_count"],
+        len(wallets),
         request.concurrency,
+        mode,
     )
 
     async def one(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if cancel and cancel.is_set():
             out = {**row, "run_status": "CANCELLED", "tx_hash": None}
-            emit_run_event(events, event_sink, _format_collect_event(out, sym))
-            return row["label"], out
-        if row["status"] != "READY":
-            out = {**row, "run_status": row["status"], "tx_hash": None}
             emit_run_event(events, event_sink, _format_collect_event(out, sym))
             return row["label"], out
         wallet = by_label.get(row["label"])
@@ -173,20 +222,27 @@ async def run_collect(
             emit_run_event(events, event_sink, _format_collect_event(out, sym))
             return row["label"], out
         async with sem:
-            value, _fee, status = await _send_amount_for_wallet(
-                pool, wallet, dest, mode, fixed_wei, request.gas
-            )
-            if status != "READY" or value <= 0:
+            try:
+                value = await _resolve_collect_amount_wei(
+                    pool, wallet, dest, mode, fixed_wei, request.gas
+                )
+            except ConfigError as exc:
                 out = {
                     **row,
-                    "amount_wei": value,
-                    "amount_native": wei_to_native_str(value),
-                    "run_status": status,
+                    "run_status": "SKIP",
+                    "error": exc.message,
                     "tx_hash": None,
                 }
                 emit_run_event(events, event_sink, _format_collect_event(out, sym))
                 return row["label"], out
-            outcome = await send_native_transfer(pool, wallet, dest, value, request.gas)
+            outcome = await send_native_transfer(
+                pool,
+                wallet,
+                dest,
+                value,
+                request.gas,
+                skip_balance_check=True,
+            )
             out = {
                 **row,
                 "amount_wei": value,
@@ -194,18 +250,29 @@ async def run_collect(
                 "tx_hash": outcome.get("tx_hash"),
                 "run_status": outcome.get("status"),
                 "error": outcome.get("error"),
-                "fee_wei": outcome.get("fee_wei", row.get("fee_wei")),
+                "fee_wei": outcome.get("fee_wei"),
             }
             emit_run_event(events, event_sink, _format_collect_event(out, sym))
             return row["label"], out
 
+    meta = {
+        "mode": "collect",
+        "chain_id": chain.chain_id,
+        "chain_name": chain.name,
+        "native_symbol": sym,
+        "destination": dest,
+        "collect_mode": mode,
+        "items": items,
+        "ready_count": len(items),
+        "total_count": len(items),
+    }
     try:
-        tasks = [asyncio.create_task(one(row)) for row in preview["items"]]
-        by_label: dict[str, dict[str, Any]] = {}
+        tasks = [asyncio.create_task(one(row)) for row in items]
+        out_by_label: dict[str, dict[str, Any]] = {}
         for task in asyncio.as_completed(tasks):
             label, row_out = await task
-            by_label[label] = row_out
-        results = [by_label[row["label"]] for row in preview["items"] if row["label"] in by_label]
+            out_by_label[label] = row_out
+        results = [out_by_label[row["label"]] for row in items if row["label"] in out_by_label]
         success = sum(1 for r in results if r.get("run_status") == "SUCCESS")
         failed = sum(1 for r in results if r.get("run_status") not in {"SUCCESS", "SKIP", "READY"})
         treasury_logger.info(
@@ -214,7 +281,7 @@ async def run_collect(
             failed,
         )
         return {
-            **preview,
+            **meta,
             "results": results,
             "success": success,
             "failed": failed,

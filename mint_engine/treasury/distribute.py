@@ -323,6 +323,67 @@ async def _recompute_preview_budget(
     )
 
 
+def _build_run_items_for_execute(
+    request: TreasuryDistributeRequest,
+    source_address: str,
+) -> list[dict[str, Any]]:
+    """Build payout rows from execute_plan or form (min/max per target). No balance RPC."""
+    source_l = checksum(source_address).lower()
+    if request.execute_plan:
+        items: list[dict[str, Any]] = []
+        for pos, ep in enumerate(
+            sorted(request.execute_plan, key=lambda r: int(r.get("index") or 0))
+        ):
+            idx = int(ep.get("index") or 0) or pos + 1
+            to_raw = (ep.get("to") or "").strip()
+            if not to_raw or not is_address(to_raw):
+                raise ConfigError(f"执行计划第 {idx} 笔目标地址无效")
+            dest = checksum(to_raw)
+            amount_wei = int(ep.get("amount_wei") or 0)
+            skip = dest.lower() == source_l or amount_wei <= 0
+            items.append(
+                {
+                    "index": idx,
+                    "to": dest,
+                    "amount_wei": amount_wei,
+                    "amount_native": wei_to_native_str(amount_wei),
+                    "status": "SKIP" if skip else "READY",
+                    "note": "不能与源地址相同" if dest.lower() == source_l else None,
+                }
+            )
+        if not items:
+            raise ConfigError("execute_plan 为空")
+        return items
+
+    targets = parse_target_addresses(request.targets)
+    items = []
+    for pos, dest in enumerate(targets):
+        idx = pos + 1
+        if dest.lower() == source_l:
+            items.append(
+                {
+                    "index": idx,
+                    "to": dest,
+                    "amount_wei": 0,
+                    "amount_native": "0",
+                    "status": "SKIP",
+                    "note": "不能与源地址相同",
+                }
+            )
+            continue
+        value_wei = random_native_wei(request.amount_min, request.amount_max)
+        items.append(
+            {
+                "index": idx,
+                "to": dest,
+                "amount_wei": value_wei,
+                "amount_native": wei_to_native_str(value_wei),
+                "status": "READY",
+            }
+        )
+    return items
+
+
 async def run_distribute(
     request: TreasuryDistributeRequest,
     *,
@@ -330,54 +391,40 @@ async def run_distribute(
     event_sink: list[str] | None = None,
 ) -> dict[str, Any]:
     _validate_amount_range(request.amount_min, request.amount_max)
-    locked = len(request.execute_plan) > 0
     source = resolve_source_wallet(request.source_private_key)
-    _assert_preview_source(request, source.address)
-    if locked:
-        preview = await _preview_from_execute_plan(request, request.execute_plan)
-    else:
-        preview = await preview_distribute(request)
-        preview = _merge_execute_plan(preview, request.execute_plan)
+    if request.execute_plan and (request.preview_source_address or "").strip():
+        _assert_preview_source(request, source.address)
+    chain = get_chain(request.chain_id)
+    items = _build_run_items_for_execute(request, source.address)
+    ready_count = sum(1 for row in items if row.get("status") == "READY")
+    if ready_count <= 0:
+        raise ConfigError("没有可执行的转出（检查目标地址与金额）")
     pool = await open_pool(request.chain_id, request.rpc_urls)
     events: list[str] = []
     results: list[dict[str, Any]] = []
+    meta = {
+        "mode": "distribute",
+        "chain_id": chain.chain_id,
+        "chain_name": chain.name,
+        "native_symbol": chain.native_symbol,
+        "source_address": source.address,
+        "items": items,
+        "ready_count": ready_count,
+        "total_count": len(items),
+    }
     try:
-        balance_for_budget = await pool.get_balance(source.address)
-        chain = get_chain(request.chain_id)
-        items, budget = await _recompute_preview_budget(
-            pool,
-            source.address,
-            preview["items"],
-            gap_min=request.gap_min_sec,
-            gap_max=request.gap_max_sec,
-            balance_wei=balance_for_budget,
-            gas=request.gas,
-            native_symbol=chain.native_symbol,
-        )
-        preview = {
-            **preview,
-            "items": items,
-            "budget": budget,
-            "ready_count": sum(1 for row in items if row["status"] == "READY"),
-            "can_run": budget.get("sufficient") and any(row["status"] == "READY" for row in items),
-            "source_balance_wei": balance_for_budget,
-            "source_balance_native": wei_to_native_str(balance_for_budget),
-        }
-        if not budget.get("sufficient"):
-            raise ConfigError(budget.get("message") or "预览合计金额 + gas 超过源钱包余额")
-
         treasury_logger.info(
-            "distribute run start chain_id=%s source=%s ready=%s locked_plan=%s",
+            "distribute run start chain_id=%s source=%s ready=%s plan_locked=%s",
             request.chain_id,
             source.address,
-            preview["ready_count"],
-            locked,
+            ready_count,
+            bool(request.execute_plan),
         )
         nonce = await pool.get_nonce(source.address, "pending")
         first = True
         cancelled = False
         aborted = False
-        for row in preview["items"]:
+        for row in items:
             if cancel and cancel.is_set():
                 emit_run_event(events, event_sink, "执行已取消")
                 cancelled = True
@@ -394,8 +441,6 @@ async def run_distribute(
                     break
             first = False
             value_wei = int(row.get("amount_wei") or 0)
-            if value_wei <= 0 and not locked:
-                value_wei = random_native_wei(request.amount_min, request.amount_max)
             if value_wei <= 0:
                 results.append({**row, "run_status": "SKIP", "error": "amount is zero"})
                 continue
@@ -406,6 +451,7 @@ async def run_distribute(
                 value_wei,
                 request.gas,
                 nonce=nonce,
+                skip_balance_check=True,
             )
             run_status = outcome.get("status") or "FAILED"
             item = {
@@ -421,7 +467,7 @@ async def run_distribute(
             emit_run_event(
                 events,
                 event_sink,
-                f"→ {row['to'][:10]}… {wei_to_native_str(value_wei)} {preview['native_symbol']} {run_status}",
+                f"→ {row['to'][:10]}… {wei_to_native_str(value_wei)} {meta['native_symbol']} {run_status}",
             )
             if run_status in {"SUCCESS", "BROADCAST", "REVERTED", "TIMEOUT"}:
                 nonce += 1
@@ -429,9 +475,9 @@ async def run_distribute(
                 aborted = True
                 break
         if cancelled:
-            _append_unprocessed_results(preview["items"], results, pending_ready_status="CANCELLED")
+            _append_unprocessed_results(items, results, pending_ready_status="CANCELLED")
         elif aborted:
-            _append_unprocessed_results(preview["items"], results, pending_ready_status="ABORTED")
+            _append_unprocessed_results(items, results, pending_ready_status="ABORTED")
         results.sort(key=lambda r: int(r.get("index") or 0))
         success = sum(1 for r in results if r.get("run_status") == "SUCCESS")
         cancelled_count = sum(1 for r in results if r.get("run_status") == "CANCELLED")
@@ -450,7 +496,7 @@ async def run_distribute(
             aborted_count,
         )
         return {
-            **preview,
+            **meta,
             "results": results,
             "success": success,
             "failed": failed,

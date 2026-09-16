@@ -4,9 +4,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from mint_engine.log_config import configure_logging
+
+configure_logging()
+
 _log = logging.getLogger("mint_engine.app")
 
 from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -56,6 +61,7 @@ WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
+    _log.info("Mint Engine API ready")
     await start_watchdog()
     yield
     await stop_watchdog()
@@ -69,6 +75,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _log_api_requests(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/"):
+        _log.info("HTTP %s %s", request.method, path)
+    response = await call_next(request)
+    if path.startswith("/api/"):
+        _log.info("HTTP %s %s -> %s", request.method, path, response.status_code)
+    return response
 
 if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")

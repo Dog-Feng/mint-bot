@@ -358,8 +358,11 @@ async def _scan_explorer(chain: ChainPreset, contract: str, owner: str) -> list[
         found = await _scan_etherscan_nfts(chain, contract, owner)
         if found:
             return found
-    if "blockscout" in blob:
-        return await _scan_blockscout(chain, contract, owner)
+    # Blockscout 系 API（含 Arc explorer.arc.io 等，URL 不一定含 blockscout 字样）
+    if chain.explorer or chain.explorer_api:
+        found = await _scan_blockscout(chain, contract, owner)
+        if found:
+            return found
     return []
 
 
@@ -492,16 +495,16 @@ async def preview_sweep(request: SweepRequest) -> dict[str, Any]:
     if request.mode == "manual" and not request.token_ids:
         raise ConfigError("手动模式请填写 token ID")
     if not request.wallets:
-        raise ConfigError("归集需要源钱包私钥")
+        raise ConfigError("归集预览需要至少一个源钱包（地址或私钥）")
     try:
         chain = get_chain(request.chain_id)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     dest = checksum(request.destination) if request.destination and is_address(request.destination) else None
     managers = WalletManager(request.wallets)
-    signers = managers.signers()
-    if not signers:
-        raise ConfigError("归集需要源钱包私钥")
+    sources = managers.wallets
+    if not sources:
+        raise ConfigError("源钱包无效，请填写 0x 地址或私钥")
     pool = await _open_pool(request.chain_id, request.rpc_urls)
     events: list[str] = []
     try:
@@ -511,7 +514,7 @@ async def preview_sweep(request: SweepRequest) -> dict[str, Any]:
             raise ConfigError("该地址没有合约代码")
         standard = await detect_standard(pool, contract, request.standard)
         rows = []
-        for wallet in signers:
+        for wallet in sources:
             tokens, note = await _resolve_wallet_tokens(pool, request, wallet, standard, contract)
             status = "READY" if tokens else "SKIP"
             rows.append(
@@ -525,7 +528,7 @@ async def preview_sweep(request: SweepRequest) -> dict[str, Any]:
                 }
             )
             events.append(f"{wallet.label} {status} ids={','.join(str(t) for t, _ in tokens) or '-'}")
-        dest_is_source = bool(dest and any(w.address.lower() == dest.lower() for w in signers))
+        dest_is_source = bool(dest and any(w.address.lower() == dest.lower() for w in sources))
         return {
             "chain_id": chain.chain_id,
             "chain_name": chain.name,
