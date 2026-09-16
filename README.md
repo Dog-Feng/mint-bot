@@ -62,6 +62,8 @@ gasLimit = 该钱包自己的 estimateGas × 1.2（估失败则 280000）
 
 Robinhood（`chain_id=4663`）无公开 mempool，sequencer 先到先得：加 tip 插不了队。页面把 tip 和倍率锁成 0，走链上最低有效价；重试次数仍可改。快慢主要看 RPC 到 sequencer 的延迟和发出早晚，不看加价。
 
+Arc（`chain_id=5042`）原生 gas 为 **USDC**（链上按 18 位精度计价，与常见 ERC-20 USDC 6 位展示不同）；公开 RPC `https://rpc.mainnet.arc.io`。Mint 单价上限、余额预留按 **USDC** 显示。OpenSea 若返回 `chain: arc` 可自动对齐；未上 OpenSea 的 drop 仍可贴合约地址 mint。
+
 ## 归集 NFT
 
 mint 完成后，控制台「归集 NFT」把各源钱包里的 NFT 转到一个出售地址，再用该地址连 OpenSea 挂单。链 / RPC / 源钱包私钥 / Gas 沿用上方配置。

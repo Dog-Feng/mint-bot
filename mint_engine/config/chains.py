@@ -127,6 +127,23 @@ CHAINS: dict[int, ChainPreset] = {
         has_public_mempool=False,
         etherscan_chain_id=None,
     ),
+    5042: ChainPreset(
+        key="arc",
+        name="Arc",
+        chain_id=5042,
+        native_symbol="USDC",
+        gas_type="eip1559",
+        explorer="https://explorer.arc.io",
+        explorer_api="https://explorer.arc.io/api",
+        public_rpc="https://rpc.mainnet.arc.io",
+        public_rpcs=(
+            "https://rpc.mainnet.arc.io",
+            "https://rpc.drpc.mainnet.arc.io",
+        ),
+        sourcify=True,
+        has_public_mempool=True,
+        etherscan_chain_id=None,
+    ),
 }
 
 
@@ -142,6 +159,7 @@ OPENSEA_CHAIN_IDS: dict[str, int] = {
     "bsc": 56,
     "bnb": 56,
     "robinhood": 4663,
+    "arc": 5042,
 }
 
 
