@@ -78,6 +78,20 @@ mint 完成后，控制台「归集 NFT」把各源钱包里的 NFT 转到一个
 
 预览只问「这个源钱包在当前所选链上有没有该合约的 NFT」，不扫其他链。有则列出 token ID。扫描顺序：所选链 RPC 上的 `tokensOfOwner` / `walletOfOwner` → Enumerable → 该链浏览器持仓接口（Etherscan 带 `chainid` / Blockscout）→ 同链 Transfer 日志（按节点限制切块）。空钱包跳过。ERC-1155 只用本次结果或手动 ID。
 
+## 钱包分发（原生币）
+
+与 Mint **同一控制台**（`/` 或 `/treasury` 打开「钱包分发」页签）。用于一对多原生币分发、多对一归集，与 NFT 归集无关。
+
+| 能力 | 说明 |
+|---|---|
+| 余额查询 | 私钥 **一行一个**；查几个地址取决于行数（空行、`#` 注释忽略） |
+| 一对多分发 | 链上转出 **仅用源私钥框第一行**；多行只影响余额查询 |
+| 预览预算 | 随机各笔金额 + 各笔 gas 求和后须 ≤ 源余额，否则禁止执行（非「笔数×最高金额」保守估） |
+| 执行锁定 | 执行须带预览返回的 `execute_plan`（READY 项）与 `preview_source_address`；改第一行源私钥须重新预览 |
+| 后台任务 | `POST …/distribute/start` 或 `…/collect/start` + `client_id`；轮询 `GET /api/run/{run_id}`、心跳 `POST /api/run/heartbeat`；与 Mint 共用取消 `POST /api/run/cancel`。**同一浏览器仅一条 active run** |
+
+Gas：`estimateGas × 1.2`（与控制台 Gas 配置一致）。分发执行中可轮询日志（`live_events`）；取消或链上中断时未发出笔标记 `CANCELLED` / `ABORTED`。
+
 ## 本地启动
 
 Python 3.11+。
@@ -118,11 +132,12 @@ python -m mint_engine
 
 ## HTTP API
 
-控制台按钮都打这些接口。`/api/run/start` 会阻塞到开售或回执结束。
+控制台按钮都打这些接口。Mint / 钱包分发 **长任务** 走后台 run：先 `POST …/start` 拿 `run_id`，再轮询 `GET /api/run/{run_id}`（可选心跳）；不再占用一条 HTTP 直到结束。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET | `/` | 控制台 |
+| GET | `/` | 控制台（Mint 页签） |
+| GET | `/treasury` | 同一 SPA，默认「钱包分发」页签 |
 | GET | `/api/health` | 探活 |
 | GET | `/api/chains` | 支持的链与公开 RPC |
 | POST | `/api/opensea/resolve` | 链接 → 链 + 合约 |
@@ -130,25 +145,39 @@ python -m mint_engine
 | POST | `/api/gas/quote` | 实时 Gas |
 | POST | `/api/inspect` | 分析合约 |
 | POST | `/api/dry-run` | 模拟，不广播 |
-| POST | `/api/run/start` | 启动 mint |
+| POST | `/api/run/start` | 启动 mint（返回 `run_id`） |
+| GET | `/api/run/{run_id}` | run 状态 / 事件 / 结果 |
+| POST | `/api/run/heartbeat` | 保活（超时自动 cancel） |
+| POST | `/api/run/cancel` | 取消（`run_id` 或 `client_id`） |
+| GET | `/api/run/active` | 当前 client 是否在跑 |
+| POST | `/api/treasury/balance` | 按行查原生币余额 |
+| POST | `/api/treasury/distribute/preview` | 一对多预览 |
+| POST | `/api/treasury/distribute/start` | 一对多执行（后台） |
+| POST | `/api/treasury/collect/preview` | 多对一预览 |
+| POST | `/api/treasury/collect/start` | 多对一执行（后台） |
 | POST | `/api/sweep/preview` | 归集预览：查各源钱包在该合约下的 token |
 | POST | `/api/sweep/run` | 归集：把 NFT 转到目标地址 |
+
+同步 `POST /api/treasury/distribute/run` 仍可用（脚本/调试）；带 `execute_plan` 时需 `preview_source_address`。
 
 ## 目录
 
 ```text
 mint_engine/           后端引擎与 FastAPI
+mint_engine/run_registry.py  Mint / 资金后台 run、心跳、取消
+mint_engine/treasury/  原生币分发与归集
 mint_engine/sweep/     NFT 归集（预览 + transfer）
-web/console.html       控制台
-tests/                 单元测试（售罄检测、Direct 参数、分片）
+web/console.html       控制台（Mint + 钱包分发）
+web/treasury.html      跳转到 /treasury
+tests/                 pytest 单元测试
 scripts/start.sh       启动脚本
 quantum/               旧 CLI，不参与当前控制台
 ```
 
-本地测试：`python -m unittest discover -s tests`
+本地测试：`python -m pytest -q`
 
 ## 注意
 
-- 公网默认无鉴权。`/api/run/start` 和 `/api/sweep/run` 会接收私钥，务必配合 [部署.md](./部署.md) 限制访问。
-- 到点抢跑时 HTTP 请求会一直挂到开售，前面的反向代理要把空闲超时拉长。
+- 公网默认无鉴权。`/api/run/start`、`/api/treasury/*/start`、`/api/sweep/run` 会接收私钥，务必配合 [部署.md](./部署.md) 限制访问。
+- 反向代理对 `/api/run/*` 轮询友好即可；长 mint 仍可能跑数小时，超时按 [部署.md](./部署.md) 配置。
 - 不要把 `.env`、私钥、`results/*.json` 提交进仓库。

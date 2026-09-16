@@ -30,6 +30,14 @@ class ConfigError(EngineError):
         super().__init__("CONFIG_ERROR", message, **kwargs)
 
 
+class RunCancelled(Exception):
+    """User or heartbeat cancelled the active mint run."""
+
+    def __init__(self, message: str = "run cancelled") -> None:
+        super().__init__(message)
+        self.message = message
+
+
 class RpcError(EngineError):
     def __init__(self, message: str, **kwargs):
         super().__init__("RPC_ERROR", message, retryable=True, **kwargs)

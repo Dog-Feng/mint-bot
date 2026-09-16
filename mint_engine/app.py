@@ -12,12 +12,39 @@ from pydantic import BaseModel, Field
 
 from mint_engine.config.chains import CHAINS, public_rpc_urls
 from mint_engine.controller import MintController
+from mint_engine.run_registry import (
+    active_run_for_client,
+    cancel_client_runs,
+    cancel_run,
+    get_run,
+    heartbeat,
+    snapshot_run,
+    start_mint_run,
+    start_treasury_collect_run,
+    start_treasury_distribute_run,
+    start_watchdog,
+    stop_watchdog,
+)
 from mint_engine.core.exceptions import EngineError
-from mint_engine.core.models import GasConfig, RunConfig, SweepRequest
+from mint_engine.core.models import (
+    GasConfig,
+    RunConfig,
+    SweepRequest,
+    TreasuryBalanceRequest,
+    TreasuryCollectRequest,
+    TreasuryDistributeRequest,
+)
 from mint_engine.discovery.opensea import prepare_config, resolve_opensea
 from mint_engine.discovery.opensea_http import close_opensea_client
 from mint_engine.rpc.pool import RpcPool
 from mint_engine.sweep import preview_sweep, run_sweep
+from mint_engine.treasury import (
+    preview_collect,
+    preview_distribute,
+    query_balances,
+    run_collect,
+    run_distribute,
+)
 from mint_engine.transaction.gas import public_gas_snapshot, quote_gas
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -25,7 +52,9 @@ WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
+    await start_watchdog()
     yield
+    await stop_watchdog()
     await close_opensea_client()
 
 
@@ -46,6 +75,15 @@ async def index():
     page = WEB_DIR / "console.html"
     if not page.exists():
         return {"ok": True, "service": "mint-engine"}
+    return FileResponse(page)
+
+
+@app.get("/treasury")
+async def treasury_page():
+    """与首页同一 SPA；路径仅用于默认打开「钱包分发」页签。"""
+    page = WEB_DIR / "console.html"
+    if not page.exists():
+        raise HTTPException(status_code=404, detail="console page not found")
     return FileResponse(page)
 
 
@@ -195,15 +233,149 @@ async def dry_run(config: RunConfig):
         await controller.aclose()
 
 
+class RunStartRequest(BaseModel):
+    client_id: str = Field(min_length=8, max_length=128)
+    config: RunConfig
+
+
+class RunHeartbeatRequest(BaseModel):
+    run_id: str
+    client_id: str
+
+
+class RunCancelRequest(BaseModel):
+    run_id: str | None = None
+    client_id: str | None = None
+
+
 @app.post("/api/run/start")
-async def run_start(config: RunConfig):
-    controller = await _controller(config)
+async def run_start(payload: RunStartRequest):
     try:
-        return await controller.mint()
+        run_id = await start_mint_run(payload.config, payload.client_id.strip())
+        return {"run_id": run_id, "status": "running"}
     except EngineError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
-    finally:
-        await controller.aclose()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
+
+
+@app.get("/api/run/{run_id}")
+async def run_status(run_id: str):
+    record = get_run(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "run not found"})
+    return snapshot_run(record)
+
+
+@app.post("/api/run/heartbeat")
+async def run_heartbeat(payload: RunHeartbeatRequest):
+    ok = await heartbeat(payload.run_id.strip(), payload.client_id.strip())
+    if not ok:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "run not active"})
+    return {"ok": True}
+
+
+@app.post("/api/run/cancel")
+async def run_cancel(payload: RunCancelRequest):
+    if payload.run_id:
+        await cancel_run(payload.run_id.strip(), reason="client cancel")
+        return {"ok": True}
+    if payload.client_id:
+        await cancel_client_runs(payload.client_id.strip(), reason="client cancel")
+        return {"ok": True}
+    raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": "run_id or client_id required"})
+
+
+@app.get("/api/run/active")
+async def run_active(client_id: str):
+    record = active_run_for_client(client_id.strip())
+    if not record:
+        return {"active": False}
+    return {"active": True, **snapshot_run(record)}
+
+
+@app.post("/api/treasury/balance")
+async def treasury_balance(payload: TreasuryBalanceRequest):
+    try:
+        return await query_balances(payload.chain_id, payload.rpc_urls, payload.private_keys)
+    except EngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
+
+
+@app.post("/api/treasury/distribute/preview")
+async def treasury_distribute_preview(payload: TreasuryDistributeRequest):
+    try:
+        return await preview_distribute(payload)
+    except EngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
+
+
+@app.post("/api/treasury/distribute/run")
+async def treasury_distribute_run(payload: TreasuryDistributeRequest):
+    try:
+        return await run_distribute(payload)
+    except EngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
+
+
+class TreasuryDistributeStartRequest(TreasuryDistributeRequest):
+    client_id: str = Field(min_length=8, max_length=128)
+
+
+class TreasuryCollectStartRequest(TreasuryCollectRequest):
+    client_id: str = Field(min_length=8, max_length=128)
+
+
+@app.post("/api/treasury/distribute/start")
+async def treasury_distribute_start(payload: TreasuryDistributeStartRequest):
+    try:
+        body = payload.model_dump(exclude={"client_id"})
+        req = TreasuryDistributeRequest.model_validate(body)
+        run_id = await start_treasury_distribute_run(req, payload.client_id.strip())
+        return {"run_id": run_id, "status": "running"}
+    except EngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
+
+
+@app.post("/api/treasury/collect/start")
+async def treasury_collect_start(payload: TreasuryCollectStartRequest):
+    try:
+        body = payload.model_dump(exclude={"client_id"})
+        req = TreasuryCollectRequest.model_validate(body)
+        run_id = await start_treasury_collect_run(req, payload.client_id.strip())
+        return {"run_id": run_id, "status": "running"}
+    except EngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
+
+
+@app.post("/api/treasury/collect/preview")
+async def treasury_collect_preview(payload: TreasuryCollectRequest):
+    try:
+        return await preview_collect(payload)
+    except EngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
+
+
+@app.post("/api/treasury/collect/run")
+async def treasury_collect_run(payload: TreasuryCollectRequest):
+    try:
+        return await run_collect(payload)
+    except EngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "CONFIG_ERROR", "message": str(exc)}) from exc
 
 
 @app.post("/api/sweep/preview")

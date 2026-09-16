@@ -262,6 +262,41 @@ class OpenSeaPreview(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class TreasuryDistributeRequest(BaseModel):
+    chain_id: int
+    source_private_key: str
+    targets: list[str] = Field(default_factory=list)
+    amount_min: str
+    amount_max: str
+    gap_min_sec: float = Field(default=0.5, ge=0)
+    gap_max_sec: float = Field(default=2.0, ge=0)
+    rpc_urls: list[str] = Field(default_factory=list)
+    gas: GasConfig = Field(default_factory=GasConfig)
+    # 执行时带上预览返回的 items（含 amount_wei），与预览金额一致
+    execute_plan: list[dict[str, Any]] = Field(default_factory=list)
+    # 与预览时的 source_address 一致时方可带 execute_plan 执行
+    preview_source_address: str | None = None
+
+
+class TreasuryBalanceRequest(BaseModel):
+    chain_id: int
+    rpc_urls: list[str] = Field(default_factory=list)
+    private_keys: list[str] = Field(default_factory=list)
+
+
+class TreasuryCollectRequest(BaseModel):
+    chain_id: int
+    source_private_keys: list[str] = Field(default_factory=list)
+    destination: str
+    mode: str = "fixed"  # fixed | all
+    fixed_amount: str | None = None
+    gap_min_sec: float = Field(default=0.3, ge=0)
+    gap_max_sec: float = Field(default=1.5, ge=0)
+    concurrency: int = Field(default=2, ge=1, le=8)
+    rpc_urls: list[str] = Field(default_factory=list)
+    gas: GasConfig = Field(default_factory=GasConfig)
+
+
 class SweepRequest(BaseModel):
     chain_id: int
     contract: str

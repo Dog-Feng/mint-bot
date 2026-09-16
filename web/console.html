@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mint Engine Console</title>
+  <title>Mint Engine · 控制台</title>
   <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -40,7 +40,7 @@
     .app {
       height: 100%;
       display: grid;
-      grid-template-rows: 56px 1fr;
+      grid-template-rows: 56px auto 1fr;
     }
 
     header {
@@ -245,6 +245,92 @@
     }
     .hidden { display: none; }
 
+    .app-body { min-height: 0; display: grid; }
+    .app-module {
+      grid-area: 1 / 1;
+      min-height: 0;
+      display: none;
+      flex-direction: column;
+    }
+    .app-module.active { display: flex; }
+    .app-module > .layout { flex: 1; min-height: 0; }
+
+    .module-bar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 8px 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(15, 18, 24, 0.95);
+    }
+    .app-nav-tabs {
+      display: inline-flex;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      align-items: center;
+      gap: 6px;
+      padding: 4px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg-3);
+    }
+    .app-nav-tab {
+      border: 0;
+      border-radius: 7px;
+      padding: 8px 16px;
+      font: 12px/1 "Noto Sans SC", sans-serif;
+      font-weight: 500;
+      cursor: pointer;
+      color: var(--muted);
+      background: transparent;
+    }
+    .app-nav-tab.active {
+      color: #1a1206;
+      background: var(--accent);
+      font-weight: 700;
+    }
+    .app-nav-tab[data-module="treasury"].active {
+      color: #062019;
+      background: var(--accent-2);
+    }
+
+    #moduleTreasury .treasury-tabs {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;
+    }
+    #moduleTreasury .treasury-tab {
+      padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+      background: var(--bg); color: var(--muted); cursor: pointer; text-align: center;
+      font-weight: 500;
+    }
+    #moduleTreasury .treasury-tab.active {
+      border-color: #6b542c; color: var(--text);
+      background: linear-gradient(180deg, rgba(215, 161, 74, 0.15), var(--bg-3));
+    }
+    #moduleTreasury .layout {
+      grid-template-columns: minmax(320px, 680px) 1fr;
+    }
+    #moduleTreasury .panel.right {
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    #moduleTreasury .actions-bar {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+      padding: 12px 16px; border-top: 1px solid var(--line); background: #12151c;
+    }
+    #moduleTreasury .radio-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+    #moduleTreasury .radio-row label {
+      display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer;
+    }
+    #moduleTreasury .radio-row input { width: auto; margin: 0; }
+    #moduleTreasury .treasury-log {
+      flex: 1; min-height: 160px; overflow: auto; background: #0a0c10;
+      border: 1px solid var(--line); border-radius: 10px; padding: 10px;
+      font: 12px/1.6 Consolas, "Courier New", monospace; color: #b7c0ce;
+    }
+    #moduleTreasury .treasury-log .ok { color: var(--ok); }
+    #moduleTreasury .treasury-log .warn { color: var(--warn); }
+    #moduleTreasury .kpis { grid-template-columns: repeat(3, 1fr); }
+    #trPlanBox.table-scroll.tall { max-height: min(480px, 50vh); }
+
     @media (max-width: 1100px) {
       .layout { grid-template-columns: 1fr; }
       .panel.left { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -258,17 +344,31 @@
       <div class="brand">
         <div class="mark">M</div>
         <div>
-          <h1>Mint Engine Console</h1>
-          <p>公网控制台 · 端口 8056 · 无需登录</p>
+          <h1>Mint Engine</h1>
+          <p id="headerSubtitle">公网控制台 · 端口 8056 · 无需登录</p>
         </div>
       </div>
       <div class="header-meta">
-        <span class="pill" id="phasePill">未检测</span>
-        <span class="pill" id="capPill">能力等级 --</span>
-        <span class="pill" id="runPill">空闲</span>
+        <span id="mintHeaderMeta">
+          <span class="pill" id="phasePill">未检测</span>
+          <span class="pill" id="capPill">能力等级 --</span>
+          <span class="pill" id="runPill">空闲</span>
+        </span>
+        <span id="treasuryHeaderMeta" class="hidden">
+          <span class="pill ok" id="trModePill">API 就绪</span>
+        </span>
       </div>
     </header>
 
+    <div class="module-bar">
+      <nav class="app-nav-tabs" aria-label="主模块">
+        <button type="button" class="app-nav-tab active" data-module="mint">Mint 模块</button>
+        <button type="button" class="app-nav-tab" data-module="treasury">钱包分发</button>
+      </nav>
+    </div>
+
+    <div class="app-body">
+    <div id="moduleMint" class="app-module active">
     <div class="layout">
       <aside class="panel left">
         <div class="left-scroll">
@@ -530,6 +630,167 @@
         </div>
       </main>
     </div>
+    </div>
+
+    <div id="moduleTreasury" class="app-module">
+      <div class="layout">
+        <aside class="panel left">
+          <div class="left-scroll">
+            <div class="section">
+              <h2>链与 RPC</h2>
+              <div class="row two">
+                <div>
+                  <label>网络</label>
+                  <select id="trChain">
+                    <option value="1">Ethereum</option>
+                    <option value="8453" selected>Base</option>
+                    <option value="42161">Arbitrum One</option>
+                    <option value="56">BSC</option>
+                    <option value="4663">Robinhood Chain</option>
+                    <option value="5042">Arc</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Chain ID</label>
+                  <input id="trChainId" value="8453" disabled />
+                </div>
+              </div>
+              <div class="row">
+                <label>自有 RPC（每行一个，可选）</label>
+                <textarea id="trRpcs" placeholder="https://your-private-rpc.example" rows="2"></textarea>
+                <div class="hint">未填则使用各链默认公开 RPC。Gas 策略：链上最低有效价 estimate × <strong>1.2</strong> 缓冲。</div>
+              </div>
+            </div>
+
+            <div class="treasury-tabs">
+              <button type="button" class="treasury-tab active" data-tr-tab="distribute">一对多分发</button>
+              <button type="button" class="treasury-tab" data-tr-tab="collect">多对一归集</button>
+            </div>
+
+            <div id="trPanelDistribute">
+              <div class="section">
+                <h2>分发 · 源钱包</h2>
+                <div class="row">
+                  <label>源钱包私钥（单个）</label>
+                  <textarea id="trDistSourceKey" placeholder="0x… 或导入格式" rows="2"></textarea>
+                </div>
+                <div class="hint" id="trDistBudgetHint">预览时按本页随机生成的每笔金额之和 + gas 与源钱包余额比对，超出则禁止执行。</div>
+              </div>
+              <div class="section">
+                <h2>分发 · 目标与金额</h2>
+                <div class="row">
+                  <label>目标地址（每行一个）</label>
+                  <textarea id="trDistTargets" placeholder="0xabc…&#10;0xdef…" rows="5"></textarea>
+                </div>
+                <div class="row two">
+                  <div>
+                    <label>每笔金额 · 最低 (<span class="tr-nativeSym">ETH</span>)</label>
+                    <input id="trDistAmtMin" type="text" inputmode="decimal" value="0.001" />
+                  </div>
+                  <div>
+                    <label>每笔金额 · 最高 (<span class="tr-nativeSym">ETH</span>)</label>
+                    <input id="trDistAmtMax" type="text" inputmode="decimal" value="0.002" />
+                  </div>
+                </div>
+                <div class="hint">每个目标在 [最低, 最高] 间<strong>随机</strong>取金额。</div>
+                <div class="row two">
+                  <div>
+                    <label>发送间隔 · 最低 (秒)</label>
+                    <input id="trDistGapMin" type="number" min="0" step="0.1" value="0.5" />
+                  </div>
+                  <div>
+                    <label>发送间隔 · 最高 (秒)</label>
+                    <input id="trDistGapMax" type="number" min="0" step="0.1" value="2" />
+                  </div>
+                </div>
+                <div class="hint">两笔转账之间随机等待 [最低, 最高] 秒。</div>
+              </div>
+            </div>
+
+            <div id="trPanelCollect" class="hidden">
+              <div class="section">
+                <h2>归集 · 源钱包</h2>
+                <div class="row">
+                  <label>源钱包私钥（每行一个）</label>
+                  <textarea id="trCollSources" placeholder="0x…&#10;0x…" rows="5"></textarea>
+                </div>
+              </div>
+              <div class="section">
+                <h2>归集 · 目标与数量</h2>
+                <div class="row">
+                  <label>归集目标地址</label>
+                  <input id="trCollDest" placeholder="0x 你的主钱包" />
+                </div>
+                <div class="row">
+                  <label>归集方式</label>
+                  <div class="radio-row">
+                    <label><input type="radio" name="trCollMode" value="fixed" checked /> 指定数量</label>
+                    <label><input type="radio" name="trCollMode" value="all" /> 全部（扣 gas 后）</label>
+                  </div>
+                </div>
+                <div class="row" id="trCollFixedRow">
+                  <label>每钱包归集数量 (<span class="tr-nativeSym">ETH</span>)</label>
+                  <input id="trCollFixedAmt" type="text" inputmode="decimal" value="0.01" />
+                  <div class="hint">指定数量：每个源钱包最多转出该数额（余额不足则按可转上限）。</div>
+                </div>
+                <div class="row hidden" id="trCollAllHint">
+                  <div class="hint">全部：每个源钱包转出 <strong>余额 − gas×1.2 缓冲</strong> 后的剩余原生币。</div>
+                </div>
+                <div class="row two">
+                  <div>
+                    <label>归集并发</label>
+                    <input id="trCollConcurrency" type="number" min="1" max="8" value="2" />
+                  </div>
+                  <div>
+                    <label>发送间隔 · 最低-最高 (秒)</label>
+                    <div class="row two" style="margin-top:4px;margin-bottom:0">
+                      <input id="trCollGapMin" type="number" min="0" step="0.1" value="0.3" />
+                      <input id="trCollGapMax" type="number" min="0" step="0.1" value="1.5" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="actions-bar">
+            <button type="button" class="btn-ghost" id="trBtnPreview">预览</button>
+            <button type="button" class="btn-ok" id="trBtnRun" disabled>确认执行</button>
+          </div>
+        </aside>
+
+        <main class="panel right">
+          <div class="section">
+            <h2>摘要</h2>
+            <div class="kpis">
+              <div class="kpi"><span>原生资产</span><strong id="trKpiNative">ETH</strong></div>
+              <div class="kpi"><span>计划笔数</span><strong id="trKpiCount">—</strong></div>
+              <div class="kpi"><span>Gas 策略</span><strong>estimate×1.2</strong></div>
+            </div>
+          </div>
+          <div class="section" style="display:flex;flex-direction:column;min-height:200px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+              <h2 style="margin:0">余额查询 <span class="pill" id="trBalancePill">未查询</span></h2>
+              <button type="button" class="btn-ghost" id="trBtnBalance" style="white-space:nowrap">查询余额</button>
+            </div>
+            <div class="hint" id="trBalanceHint">每行一个私钥，按行数查询对应地址余额；一对多分发时链上转账仅使用第一行作为源钱包。</div>
+            <div class="table-scroll tall" id="trBalanceBox" style="margin-top:8px;max-height:min(240px,28vh)">
+              <div class="empty">填写私钥后点「查询余额」。</div>
+            </div>
+          </div>
+          <div class="section" style="flex:1;display:flex;flex-direction:column;min-height:280px">
+            <h2>计划明细 <span class="pill" id="trPreviewPill">未预览</span></h2>
+            <div class="table-scroll tall" id="trPlanBox">
+              <div class="empty">填写左侧表单后点「预览（演示）」查看模拟计划表。</div>
+            </div>
+          </div>
+          <div class="section" style="flex:1;display:flex;flex-direction:column;min-height:140px">
+            <h2>日志</h2>
+            <div class="treasury-log" id="trLogBox"></div>
+          </div>
+        </main>
+      </div>
+    </div>
+    </div>
   </div>
 
   <script>
@@ -542,6 +803,9 @@
       report: null,
       abort: null,
       heartbeat: null,
+      runPoll: null,
+      runId: null,
+      runEventCount: 0,
       gasTimer: null,
       gasLive: null,
       gasRpcUrls: [],
@@ -1212,12 +1476,100 @@
       $("btnSweepStop").disabled = !state.sweeping;
     }
 
+    const CLIENT_ID_KEY = "mint_engine_client_id";
+
+    function getClientId() {
+      let id = sessionStorage.getItem(CLIENT_ID_KEY);
+      if (!id) {
+        id = crypto.randomUUID();
+        sessionStorage.setItem(CLIENT_ID_KEY, id);
+      }
+      return id;
+    }
+
     function clearHeartbeat() {
       if (state.heartbeat) {
         clearInterval(state.heartbeat);
         state.heartbeat = null;
       }
     }
+
+    function clearRunPoll() {
+      if (state.runPoll) {
+        clearInterval(state.runPoll);
+        state.runPoll = null;
+      }
+    }
+
+    async function postRunCancel(extra = {}) {
+      const body = { client_id: getClientId(), ...extra };
+      if (state.runId) body.run_id = state.runId;
+      try {
+        await fetch("/api/run/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    function startMintRunHeartbeat(runId) {
+      clearHeartbeat();
+      state.heartbeat = setInterval(() => {
+        fetch("/api/run/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ run_id: runId, client_id: getClientId() }),
+        }).catch(() => {});
+      }, 3000);
+    }
+
+    function tailRunEvents(events) {
+      const list = events || [];
+      if (list.length <= state.runEventCount) return;
+      list.slice(state.runEventCount).forEach((line) => log(line));
+      state.runEventCount = list.length;
+    }
+
+    function waitForRun(runId, { logLine = log } = {}) {
+      return new Promise((resolve, reject) => {
+        clearRunPoll();
+        let eventCount = 0;
+        const tick = async () => {
+          try {
+            const response = await fetch(`/api/run/${encodeURIComponent(runId)}`);
+            const snap = await response.json();
+            if (!response.ok) {
+              throw new Error(snap.message || "run status failed");
+            }
+            const list = snap.events || [];
+            if (list.length > eventCount) {
+              list.slice(eventCount).forEach((line) => logLine(line));
+              eventCount = list.length;
+            }
+            if (snap.status && snap.status !== "running") {
+              clearRunPoll();
+              clearHeartbeat();
+              resolve(snap);
+            }
+          } catch (err) {
+            clearRunPoll();
+            clearHeartbeat();
+            reject(err);
+          }
+        };
+        tick();
+        state.runPoll = setInterval(tick, 1000);
+      });
+    }
+
+    window.addEventListener("pagehide", () => {
+      if (!state.runId) return;
+      const body = JSON.stringify({ client_id: getClientId(), run_id: state.runId });
+      navigator.sendBeacon("/api/run/cancel", new Blob([body], { type: "application/json" }));
+    });
 
     function applyOpenSea(data) {
       $("openseaUrl").value = data.opensea.url;
@@ -1518,54 +1870,63 @@
         return log(err.message, "err");
       }
       state.running = true;
-      state.abort = new AbortController();
       setBusy(true);
       setPill("runPill", "运行中", "warn");
       setPill("phasePill", "阶段追逐", "warn");
-      log("已提交启动：按阶段自动探测资格，有资格即 mint；无资格则等待下一阶段。请求会持续到全部钱包结束或售罄停发。", "ok");
+      log("已提交启动：本浏览器仅保留一条 active run；刷新/断网/关页将取消后续计划（已广播不等回执）。", "ok");
       document.querySelectorAll("#walletBody tr").forEach((tr) => {
         if (tr.dataset.status === "READY") tr.children[1].textContent = "running";
       });
       clearHeartbeat();
-      log("启动请求已提交，等待服务端（阶段等待 / 资格探测 / 广播 / 回执）；长任务可能持续较久。", "ok");
+      clearRunPoll();
+      state.runId = null;
       try {
-        const data = await api("/api/run/start", config, { signal: state.abort.signal });
+        const started = await api("/api/run/start", { client_id: getClientId(), config });
+        state.runId = started.run_id;
+        startMintRunHeartbeat(state.runId);
+        const snap = await waitForRun(state.runId);
+        const data = snap.result || {};
         if (data.report) renderInspect(data.report);
-        (data.events || []).forEach((line) => log(line));
         applyMintResults(data.results || []);
         const success = data.success != null ? data.success : (data.results || []).filter((r) => r.status === "SUCCESS").length;
         const skipped = data.skipped != null ? data.skipped : (data.results || []).filter((r) => r.status === "SKIP").length;
-        setPill("runPill", success ? "已完成" : "结束", success ? "ok" : "danger");
-        setPill("phasePill", success ? "mint 成功" : "mint 结束", success ? "ok" : "warn");
-        log(`启动结束：成功 ${success} / ${data.prepared || (data.results || []).length}，跳过未发送 ${skipped}，广播耗时 ${data.elapsed_sec ?? "--"}s。`, success ? "ok" : "warn");
-      } catch (err) {
-        if (err.name === "AbortError") {
-          setPill("runPill", "已断开", "danger");
-          log("已断开浏览器请求。服务端若已预签名或广播，链上仍会继续。", "warn");
-        } else {
+        const cancelled = snap.status === "cancelled" || data.cancelled;
+        if (cancelled) {
+          setPill("runPill", "已取消", "warn");
+          setPill("phasePill", "已停止", "warn");
+          log(`运行已取消（${snap.cancel_reason || "client"}）。已广播的交易不再等回执。`, "warn");
+        } else if (snap.status === "failed") {
           setPill("runPill", "失败", "danger");
           setPill("phasePill", "启动失败", "danger");
-          log(`启动失败：${err.message}`, "err");
+          log(`启动失败：${snap.error || "unknown"}`, "err");
+        } else {
+          setPill("runPill", success ? "已完成" : "结束", success ? "ok" : "danger");
+          setPill("phasePill", success ? "mint 成功" : "mint 结束", success ? "ok" : "warn");
+          log(`启动结束：成功 ${success} / ${data.prepared || (data.results || []).length}，跳过 ${skipped}，耗时 ${data.elapsed_sec ?? "--"}s。`, success ? "ok" : "warn");
         }
+      } catch (err) {
+        setPill("runPill", "失败", "danger");
+        setPill("phasePill", "启动失败", "danger");
+        log(`启动失败：${err.message}`, "err");
       } finally {
         clearHeartbeat();
+        clearRunPoll();
         state.running = false;
-        state.abort = null;
+        state.runId = null;
         setBusy(false);
       }
     };
 
-    $("btnStop").onclick = () => {
-      if (state.abort) state.abort.abort();
-      clearHeartbeat();
-      state.running = false;
+    $("btnStop").onclick = async () => {
       $("btnStop").disabled = true;
-      log("已请求停止当前浏览器等待。无法撤销已经发出的交易。", "warn");
+      log("正在请求取消：停止未发送钱包，已广播不再等回执。", "warn");
+      await postRunCancel();
     };
 
     async function boot() {
       refreshAbiStatus();
       applyChainDefaults();
+      await postRunCancel();
       try {
         const health = await fetch("/api/health").then((r) => r.json());
         if (!health.ok) throw new Error("health not ok");
@@ -1601,6 +1962,417 @@
       syncActionButtons();
     }
 
+    const TR_CHAINS = {
+      1: { name: "Ethereum", symbol: "ETH" },
+      8453: { name: "Base", symbol: "ETH" },
+      42161: { name: "Arbitrum One", symbol: "ETH" },
+      56: { name: "BSC", symbol: "BNB" },
+      4663: { name: "Robinhood Chain", symbol: "ETH" },
+      5042: { name: "Arc", symbol: "USDC" },
+    };
+
+    function initTreasuryModule() {
+      const tr = (id) => document.getElementById(id);
+      let trActiveTab = "distribute";
+      let trLastPreview = null;
+      let trBusy = false;
+
+      function trLog(msg, cls = "") {
+        const line = document.createElement("div");
+        line.className = cls;
+        line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        tr("trLogBox").prepend(line);
+      }
+
+      function trNativeSymbol() {
+        const id = tr("trChain").value;
+        return (TR_CHAINS[id] && TR_CHAINS[id].symbol) || "ETH";
+      }
+
+      function trGasConfig() {
+        return {
+          type: "eip1559",
+          bump: {
+            mode: "extra_tip",
+            extra_priority_gwei: 0,
+            max_fee_multiplier: 1.0,
+            hard_cap_gwei: 0,
+          },
+          gas_limit_mode: "estimate_or_fallback",
+          fallback_gas_limit: 21000,
+          max_retries: 3,
+          receipt_timeout_sec: 180,
+        };
+      }
+
+      function trSyncChain() {
+        const id = tr("trChain").value;
+        tr("trChainId").value = id;
+        const sym = trNativeSymbol();
+        document.querySelectorAll("#moduleTreasury .tr-nativeSym").forEach((el) => {
+          el.textContent = sym;
+        });
+        tr("trKpiNative").textContent = sym;
+        trLastPreview = null;
+        tr("trBtnRun").disabled = true;
+        tr("trPreviewPill").textContent = "未预览";
+        tr("trPreviewPill").className = "pill";
+      }
+
+      document.querySelectorAll("#moduleTreasury .treasury-tab").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          trActiveTab = btn.dataset.trTab;
+          document.querySelectorAll("#moduleTreasury .treasury-tab").forEach((b) => {
+            b.classList.toggle("active", b === btn);
+          });
+          tr("trPanelDistribute").classList.toggle("hidden", trActiveTab !== "distribute");
+          tr("trPanelCollect").classList.toggle("hidden", trActiveTab !== "collect");
+          trLastPreview = null;
+          tr("trBtnRun").disabled = true;
+          tr("trPlanBox").innerHTML = '<div class="empty">切换模式后请重新预览。</div>';
+          trUpdateBalanceHint();
+        });
+      });
+
+      tr("trChain").addEventListener("change", trSyncChain);
+      trUpdateBalanceHint();
+
+      document.querySelectorAll('input[name="trCollMode"]').forEach((r) => {
+        r.addEventListener("change", () => {
+          const all = document.querySelector('input[name="trCollMode"]:checked').value === "all";
+          tr("trCollFixedRow").classList.toggle("hidden", all);
+          tr("trCollAllHint").classList.toggle("hidden", !all);
+        });
+      });
+
+      function trParseLines(text) {
+        return (text || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      }
+
+      function trShortAddr(addr) {
+        if (!addr || addr.length < 12) return addr || "";
+        return `${addr.slice(0, 10)}…${addr.slice(-4)}`;
+      }
+
+      function trRowStatus(r) {
+        return r.run_status || r.status || "—";
+      }
+
+      function trRenderPlan(data) {
+        const sym = data.native_symbol || trNativeSymbol();
+        const rows = data.results || data.items || [];
+        tr("trKpiCount").textContent = String(data.total_count ?? rows.length ?? "—");
+        if (data.mode === "distribute") {
+          tr("trPlanBox").innerHTML = `
+            <table>
+              <thead><tr>
+                <th>#</th><th>目标</th><th>金额 (${sym})</th><th>Gas (${sym})</th><th>延迟(s)</th><th>状态</th><th>Tx</th>
+              </tr></thead>
+              <tbody>${rows.map((r) => `
+                <tr>
+                  <td>${r.index}</td>
+                  <td class="mono" title="${escapeHtml(r.to)}">${escapeHtml(trShortAddr(r.to))}</td>
+                  <td>${escapeHtml(r.amount_native)}</td>
+                  <td>${escapeHtml(r.fee_native || "—")}</td>
+                  <td>${r.delay_sec ?? "—"}</td>
+                  <td>${escapeHtml(trRowStatus(r))}${r.note ? ` · ${escapeHtml(r.note)}` : ""}${r.error ? ` · ${escapeHtml(r.error)}` : ""}</td>
+                  <td class="mono">${r.tx_hash ? escapeHtml(trShortAddr(r.tx_hash)) : "—"}</td>
+                </tr>
+              `).join("")}</tbody>
+            </table>`;
+          if (data.source_address) {
+            trLog(`源 ${trShortAddr(data.source_address)} 余额 ${data.source_balance_native} ${sym}`, "ok");
+          }
+        } else {
+          const dest = data.destination || "";
+          tr("trPlanBox").innerHTML = `
+            <table>
+              <thead><tr>
+                <th>#</th><th>钱包</th><th>余额</th><th>转出 (${sym})</th><th>Gas</th><th>状态</th><th>Tx</th>
+              </tr></thead>
+              <tbody>${rows.map((r, i) => `
+                <tr>
+                  <td>${i + 1}</td>
+                  <td class="mono" title="${escapeHtml(r.address)}">${escapeHtml(r.label || trShortAddr(r.address))}</td>
+                  <td>${escapeHtml(r.balance_native || "—")}</td>
+                  <td>${escapeHtml(r.amount_native)}</td>
+                  <td>${escapeHtml(r.fee_native || "—")}</td>
+                  <td>${escapeHtml(trRowStatus(r))}${r.error ? ` · ${escapeHtml(r.error)}` : ""}</td>
+                  <td class="mono">${r.tx_hash ? escapeHtml(trShortAddr(r.tx_hash)) : "—"}</td>
+                </tr>
+              `).join("")}</tbody>
+            </table>
+            <div class="hint" style="padding:8px">→ ${escapeHtml(trShortAddr(dest))}</div>`;
+        }
+      }
+
+      function trPrivateKeysForBalance() {
+        if (trActiveTab === "distribute") {
+          return trParseLines(tr("trDistSourceKey").value);
+        }
+        return trParseLines(tr("trCollSources").value);
+      }
+
+      function trUpdateBalanceHint() {
+        const el = tr("trBalanceHint");
+        if (!el) return;
+        el.textContent =
+          trActiveTab === "distribute"
+            ? "源钱包私钥：每行一个，按行查询余额；执行分发时仅第一行作为转出源。"
+            : "源钱包私钥：每行一个，按行查询每个钱包的原生币余额。";
+      }
+
+      function trRenderBalanceTable(data) {
+        const sym = data.native_symbol || trNativeSymbol();
+        const rows = data.items || [];
+        if (!rows.length) {
+          tr("trBalanceBox").innerHTML = '<div class="empty">无查询结果。</div>';
+          return;
+        }
+        const ok = rows.filter((r) => r.status === "OK").length;
+        tr("trBalancePill").textContent = `已查 ${ok}/${rows.length}`;
+        tr("trBalancePill").className = ok === rows.length ? "pill ok" : "pill warn";
+        tr("trBalanceBox").innerHTML = `
+          <table>
+            <thead><tr>
+              <th>#</th><th>钱包</th><th>地址</th><th>余额 (${sym})</th><th>状态</th>
+            </tr></thead>
+            <tbody>${rows.map((r, i) => `
+              <tr>
+                <td>${i + 1}</td>
+                <td>${escapeHtml(r.label || "—")}</td>
+                <td class="mono" title="${escapeHtml(r.address || "")}">${escapeHtml(r.address ? trShortAddr(r.address) : "—")}</td>
+                <td>${escapeHtml(r.status === "OK" ? r.balance_native : "—")}</td>
+                <td>${escapeHtml(r.status)}${r.error ? ` · ${escapeHtml(r.error)}` : ""}</td>
+              </tr>
+            `).join("")}</tbody>
+          </table>`;
+      }
+
+      function trBuildBalancePayload() {
+        return {
+          chain_id: Number(tr("trChain").value),
+          rpc_urls: trParseLines(tr("trRpcs").value),
+          private_keys: trPrivateKeysForBalance(),
+        };
+      }
+
+      async function trQueryBalances() {
+        const keys = trPrivateKeysForBalance();
+        if (!keys.length) {
+          trLog(trActiveTab === "distribute" ? "请先填写源钱包私钥。" : "请先填写至少一个源钱包私钥。", "warn");
+          return;
+        }
+        tr("trBtnBalance").disabled = true;
+        tr("trBalancePill").textContent = "查询中…";
+        tr("trBalancePill").className = "pill";
+        try {
+          trLog(`余额查询 ${keys.length} 个钱包…`);
+          const data = await api("/api/treasury/balance", trBuildBalancePayload());
+          trRenderBalanceTable(data);
+          const sym = data.native_symbol || trNativeSymbol();
+          trLog(`余额查询完成（${sym}）。`, "ok");
+        } catch (err) {
+          tr("trBalancePill").textContent = "查询失败";
+          tr("trBalancePill").className = "pill warn";
+          trLog(err.message || String(err), "warn");
+        } finally {
+          tr("trBtnBalance").disabled = false;
+        }
+      }
+
+      function trDistributeSourceKey() {
+        const lines = trParseLines(tr("trDistSourceKey").value);
+        return lines[0] || "";
+      }
+
+      function trBuildDistributePayload(extra = {}) {
+        return {
+          chain_id: Number(tr("trChain").value),
+          rpc_urls: trParseLines(tr("trRpcs").value),
+          source_private_key: trDistributeSourceKey(),
+          targets: trParseLines(tr("trDistTargets").value),
+          amount_min: tr("trDistAmtMin").value.trim(),
+          amount_max: tr("trDistAmtMax").value.trim(),
+          gap_min_sec: Number(tr("trDistGapMin").value) || 0,
+          gap_max_sec: Number(tr("trDistGapMax").value) || 0,
+          gas: trGasConfig(),
+          ...extra,
+        };
+      }
+
+      function trBuildCollectPayload(extra = {}) {
+        const modeAll = document.querySelector('input[name="trCollMode"]:checked').value === "all";
+        return {
+          chain_id: Number(tr("trChain").value),
+          rpc_urls: trParseLines(tr("trRpcs").value),
+          source_private_keys: trParseLines(tr("trCollSources").value),
+          destination: tr("trCollDest").value.trim(),
+          mode: modeAll ? "all" : "fixed",
+          fixed_amount: modeAll ? null : tr("trCollFixedAmt").value.trim(),
+          gap_min_sec: Number(tr("trCollGapMin").value) || 0,
+          gap_max_sec: Number(tr("trCollGapMax").value) || 0,
+          concurrency: Number(tr("trCollConcurrency").value) || 2,
+          gas: trGasConfig(),
+          ...extra,
+        };
+      }
+
+      async function trDoPreview() {
+        if (trBusy) return;
+        trBusy = true;
+        tr("trBtnPreview").disabled = true;
+        tr("trBtnRun").disabled = true;
+        try {
+          const path =
+            trActiveTab === "distribute"
+              ? "/api/treasury/distribute/preview"
+              : "/api/treasury/collect/preview";
+          const body =
+            trActiveTab === "distribute" ? trBuildDistributePayload() : trBuildCollectPayload();
+          trLog("请求预览…");
+          const data = await api(path, body);
+          trLastPreview = data;
+          trRenderPlan(data);
+          tr("trPreviewPill").textContent = `已预览 · ${data.ready_count}/${data.total_count} 可执行`;
+          tr("trPreviewPill").className = data.can_run ? "pill ok" : "pill warn";
+          tr("trBtnRun").disabled = !data.can_run;
+          if (data.mode === "distribute") {
+            const budget = data.budget || {};
+            if (budget.message) {
+              tr("trDistBudgetHint").textContent = budget.message;
+              trLog(budget.message, budget.sufficient ? "ok" : "warn");
+            } else if (budget.total_required_native != null) {
+              const sym = data.native_symbol || trNativeSymbol();
+              tr("trDistBudgetHint").textContent =
+                `${budget.payable_targets} 笔 · 预览合计 ${budget.total_amount_native} + gas ${budget.total_fee_native} = ${budget.total_required_native} ${sym}`;
+            }
+          }
+          trLog(`预览完成，${data.ready_count} 笔可执行。`, data.can_run ? "ok" : "warn");
+          if (data.mode === "distribute" && !data.can_run && data.budget && !data.budget.sufficient) {
+            trLog("余额预估不足，已禁止执行。", "warn");
+          }
+        } catch (err) {
+          trLastPreview = null;
+          trLog(err.message || String(err), "warn");
+        } finally {
+          trBusy = false;
+          tr("trBtnPreview").disabled = false;
+        }
+      }
+
+      async function trDoRun() {
+        if (trBusy || !trLastPreview?.can_run) return;
+        if (!confirm("确认按当前预览计划执行链上转账？私钥将发送到本机后端签名。")) return;
+        trBusy = true;
+        tr("trBtnPreview").disabled = true;
+        tr("trBtnRun").disabled = true;
+        try {
+          let body;
+          let startPath;
+          if (trActiveTab === "distribute") {
+            startPath = "/api/treasury/distribute/start";
+            body = trBuildDistributePayload({
+              execute_plan: (trLastPreview.items || []).filter((r) => r.status === "READY"),
+              preview_source_address: trLastPreview.source_address || null,
+            });
+          } else {
+            startPath = "/api/treasury/collect/start";
+            body = trBuildCollectPayload();
+          }
+          trLog("后台执行中…（可切换 Tab，同浏览器仅一个活跃任务）");
+          const started = await api(startPath, { client_id: getClientId(), ...body });
+          state.runId = started.run_id;
+          startMintRunHeartbeat(state.runId);
+          const snap = await waitForRun(state.runId, { logLine: (line) => trLog(line, "ok") });
+          state.runId = null;
+          if (snap.status === "failed") {
+            throw new Error(snap.error || "执行失败");
+          }
+          const data = snap.result || {};
+          trLastPreview = { ...data, can_run: false };
+          const rows = data.results || data.items || [];
+          trRenderPlan({ ...data, items: rows, mode: data.mode || trActiveTab });
+          const runCancelled = snap.status === "cancelled";
+          const nCancel = data.cancelled ?? 0;
+          const nAbort = data.aborted ?? 0;
+          const nFail = data.failed ?? 0;
+          const nOk = data.success ?? 0;
+          let pill = `完成 · 成功 ${nOk}`;
+          if (nFail) pill += ` / 失败 ${nFail}`;
+          if (nCancel) pill += ` / 取消 ${nCancel}`;
+          if (nAbort) pill += ` / 未执行 ${nAbort}`;
+          tr("trPreviewPill").textContent = pill;
+          tr("trPreviewPill").className = nFail || runCancelled ? "pill warn" : "pill ok";
+          let endMsg = runCancelled
+            ? `执行已取消（${nCancel} 笔未发出）。`
+            : `执行结束：成功 ${nOk}，失败 ${nFail}。`;
+          if (nAbort) endMsg += ` 链上中断未执行 ${nAbort} 笔。`;
+          trLog(endMsg, runCancelled || nFail || nAbort ? "warn" : "ok");
+        } catch (err) {
+          trLog(err.message || String(err), "warn");
+        } finally {
+          state.runId = null;
+          clearHeartbeat();
+          clearRunPoll();
+          trBusy = false;
+          tr("trBtnPreview").disabled = false;
+          tr("trBtnRun").disabled = !trLastPreview?.can_run;
+        }
+      }
+
+      tr("trBtnPreview").addEventListener("click", () => trDoPreview());
+      tr("trBtnRun").addEventListener("click", () => trDoRun());
+      tr("trBtnBalance").addEventListener("click", () => trQueryBalances());
+      trSyncChain();
+      trLog("资金模块已加载 · Gas estimate×1.2 · 明细过多时在表格内滚动。", "ok");
+    }
+
+    let appModule = "mint";
+
+    function setAppModule(name, { pushUrl = true } = {}) {
+      if (name !== "mint" && name !== "treasury") name = "mint";
+      appModule = name;
+      $("moduleMint").classList.toggle("active", name === "mint");
+      $("moduleTreasury").classList.toggle("active", name === "treasury");
+      $("mintHeaderMeta").classList.toggle("hidden", name !== "mint");
+      $("treasuryHeaderMeta").classList.toggle("hidden", name !== "treasury");
+      document.querySelectorAll(".app-nav-tab").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.module === name);
+      });
+      const sub = $("headerSubtitle");
+      if (sub) {
+        sub.textContent =
+          name === "mint"
+            ? "公网控制台 · 端口 8056 · 无需登录"
+            : "钱包分发 / 归集 · 切换页签不丢失已填内容";
+      }
+      document.title = name === "mint" ? "Mint Engine · 控制台" : "Mint Engine · 钱包分发";
+      if (pushUrl) {
+        const path = name === "treasury" ? "/treasury" : "/";
+        if (location.pathname !== path) {
+          history.pushState({ module: name }, "", path);
+        }
+      }
+    }
+
+    document.querySelectorAll(".app-nav-tab").forEach((btn) => {
+      btn.addEventListener("click", () => setAppModule(btn.dataset.module));
+    });
+
+    window.addEventListener("popstate", () => {
+      setAppModule(location.pathname === "/treasury" ? "treasury" : "mint", { pushUrl: false });
+    });
+
+    function resolveInitialModule() {
+      const fromPath = location.pathname === "/treasury" ? "treasury" : "mint";
+      const fromQuery = new URLSearchParams(location.search).get("module");
+      const name = fromQuery === "treasury" ? "treasury" : fromPath;
+      setAppModule(name, { pushUrl: false });
+    }
+
+    initTreasuryModule();
+    resolveInitialModule();
     boot();
   </script>
 </body>

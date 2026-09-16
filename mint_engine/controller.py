@@ -9,7 +9,7 @@ _log = logging.getLogger("mint_engine")
 
 from mint_engine.analyzer.contract_analyzer import ContractAnalyzer
 from mint_engine.config.chains import get_chain
-from mint_engine.core.exceptions import ConfigError, EngineError
+from mint_engine.core.exceptions import ConfigError, EngineError, RunCancelled
 from mint_engine.chase import ChaseContext, ChaseWallet, init_chase_wallets, is_public_final_stage
 from mint_engine.price_guard import PriceGuardError, enforce_price_guard, native_unit_to_wei
 from mint_engine.core.models import (
@@ -71,6 +71,8 @@ class MintController:
         )
         self.wallets = WalletManager(config.wallets.items) if config.wallets.items else WalletManager([])
         self.events: list[str] = []
+        self._user_cancel: asyncio.Event | None = None
+        self._last_payload: dict[str, Any] | None = None
 
     async def aclose(self) -> None:
         await self.pool.aclose()
@@ -211,7 +213,42 @@ class MintController:
             http2=bool(sched.opensea_http2),
         )
 
-    async def mint(self) -> dict[str, Any]:
+    def _user_cancelled(self) -> bool:
+        return self._user_cancel is not None and self._user_cancel.is_set()
+
+    def _check_cancel(self) -> None:
+        if self._user_cancelled():
+            raise RunCancelled()
+
+    def _skip_cancelled(self, report: InspectReport, wallet, why: str = "run cancelled") -> dict[str, Any]:
+        return {
+            "wallet": wallet.label,
+            "address": wallet.address,
+            "method": self._result_method(report),
+            "quantity": self.config.mint.quantity,
+            "tx_hash": None,
+            "status": "SKIP",
+            "cancelled": True,
+            "error": why,
+        }
+
+    def build_cancel_snapshot(self) -> dict[str, Any]:
+        if self._last_payload:
+            out = dict(self._last_payload)
+            out["cancelled"] = True
+            return out
+        return {
+            "cancelled": True,
+            "results": [],
+            "events": list(self.events),
+            "success": 0,
+            "skipped": 0,
+            "prepared": 0,
+        }
+
+    async def mint(self, cancel: asyncio.Event | None = None) -> dict[str, Any]:
+        self._user_cancel = cancel
+        self._check_cancel()
         dry = await self.dry_run()
         report = InspectReport.model_validate(dry["report"])
         multi_stage = bool(self.opensea and self.opensea.stages)
@@ -247,19 +284,32 @@ class MintController:
 
         self.log("STAGE CHASE: per-wallet stage eligibility, mint when eligible")
         launch = time.perf_counter()
-        if multi_stage:
-            payload = await self._run_stage_chase(report, ready)
-        else:
-            payload = await self._run_chain_chase(report, ready)
+        try:
+            if multi_stage:
+                payload = await self._run_stage_chase(report, ready)
+            else:
+                payload = await self._run_chain_chase(report, ready)
+        except RunCancelled:
+            self.log("[CANCEL] run aborted")
+            payload = self._last_payload or {
+                "report": report.model_dump(),
+                "results": [],
+                "chase": None,
+            }
+            payload["cancelled"] = True
         payload["elapsed_sec"] = round(time.perf_counter() - launch, 3)
         payload["events"] = self.events
         payload["prepared"] = len(ready)
         payload["success"] = sum(1 for row in payload["results"] if row.get("status") == "SUCCESS")
         payload["skipped"] = sum(1 for row in payload["results"] if row.get("status") == "SKIP")
+        self._last_payload = payload
+        if self._user_cancelled():
+            payload["cancelled"] = True
         return payload
 
     async def _run_chain_chase(self, report: InspectReport, ready) -> dict[str, Any]:
         while True:
+            self._check_cancel()
             report = await self._refresh_report(report)
             if report.sale.status == SaleStatus.SOLD_OUT:
                 raise ConfigError("refusing to mint: SOLD_OUT")
@@ -270,6 +320,7 @@ class MintController:
                 report = await self._wait_stage_schedule(int(start), report)
                 continue
             break
+        self._check_cancel()
         results = await self._blast_all_wallets(report, ready)
         return {"report": report.model_dump(), "results": results, "chase": None}
 
@@ -388,6 +439,15 @@ class MintController:
             }
 
         while ctx.active_wallets:
+            if self._user_cancelled():
+                self.log("[CANCEL] stage chase stopped; skip wallets not yet sent")
+                for chase_wallet in ctx.active_wallets:
+                    if not chase_wallet.done:
+                        chase_wallet.finish(
+                            self._skip_cancelled(report, chase_wallet.wallet),
+                            "CANCELLED",
+                        )
+                break
             if stop.is_set() and self.config.wallets.stop_on_sold_out:
                 for chase_wallet in ctx.active_wallets:
                     chase_wallet.finish(
@@ -705,11 +765,13 @@ class MintController:
             }
             for w in ctx.wallets
         ]
-        return {
+        payload = {
             "report": report.model_dump(),
             "results": results,
             "chase": {"wallets": chase_summary},
         }
+        self._last_payload = payload
+        return payload
 
     async def _mint_one_wallet(
         self,
@@ -722,6 +784,8 @@ class MintController:
         *,
         opensea_plan: TxPlan | None = None,
     ) -> dict[str, Any]:
+        if self._user_cancelled():
+            return self._skip_cancelled(report, wallet)
         if self.config.wallets.stop_on_sold_out and stop.is_set():
             return self._skip_unsent(report, wallet, "sold out, not sent")
         try:
@@ -1001,6 +1065,8 @@ class MintController:
 
     async def _wait_until(self, timestamp: float, label: str) -> None:
         while True:
+            if self._user_cancelled():
+                raise RunCancelled()
             remaining = timestamp - time.time()
             if remaining <= 0:
                 self.log(f"{label} now")
@@ -1123,6 +1189,10 @@ class MintController:
         last = None
         retries = self.config.gas.max_retries
         for attempt in range(retries + 1):
+            if self._user_cancelled():
+                if last is not None and last.get("tx_hash"):
+                    return last
+                return self._skip_cancelled(report, wallet)
             stopping = bool(stop and stop.is_set() and self.config.wallets.stop_on_sold_out)
             if stopping and last is not None:
                 return last
@@ -1151,7 +1221,7 @@ class MintController:
                 return last
             if last.get("sold_out"):
                 return last
-            if last["status"] == "TIMEOUT":
+            if last["status"] == "TIMEOUT" and not self._user_cancelled():
                 late = await self.pool.wait_receipt(
                     current["tx_hash"],
                     timeout=10,
@@ -1175,6 +1245,8 @@ class MintController:
         stop: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         wallet = prepared["wallet"]
+        if self._user_cancelled():
+            return self._skip_cancelled(report, wallet)
         if stop and stop.is_set() and self.config.wallets.stop_on_sold_out:
             return self._skip_unsent(report, wallet, "sold out, not sent")
         prefer = prepared.get("rpc_url")
@@ -1203,6 +1275,20 @@ class MintController:
         self.log(
             f"[SENT] {wallet.address} tx={prepared['tx_hash']} rpc={short_rpc_url(str(sent_url or ''))}"
         )
+        if self._user_cancelled():
+            self.log(f"[CANCEL] {wallet.address} broadcast ok; skip receipt wait")
+            return {
+                "wallet": wallet.label,
+                "address": wallet.address,
+                "method": self._result_method(report),
+                "quantity": self.config.mint.quantity,
+                "tx_hash": prepared["tx_hash"],
+                "status": "BROADCAST",
+                "broadcasts": broadcasts,
+                "gas_attempt": prepared["quote"].get("attempt", 0),
+                "cancelled": True,
+                "error": None,
+            }
         receipt = await self.pool.wait_receipt(
             prepared["tx_hash"],
             timeout=self.config.gas.receipt_timeout_sec,
