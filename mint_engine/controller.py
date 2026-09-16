@@ -27,12 +27,14 @@ from mint_engine.discovery.opensea import fetch_drop_stages
 from mint_engine.discovery.opensea_mint import (
     OpenSeaMintProbe,
     build_drop_mint_transaction,
+    build_opensea_mint_plan,
     mint_errors_indicate_drop_fully_sold_out,
 )
 from mint_engine.discovery.opensea_stages import (
     build_stage_sequence,
     drop_has_future_mint_window,
     eligibility_retry_window_open,
+    hot_path_active,
     resolve_drop_stage,
     sale_from_stage,
     stage_bounds,
@@ -276,10 +278,69 @@ class MintController:
 
         stop = asyncio.Event()
         analysis: dict[str, Any] | None = None
+        cached_quote: dict[str, int] | None = None
         last_stage_sync_at = 0.0
         url_map = {
             w.address.lower(): url for w, url in zip(ready, self._shard_urls(len(ready)))
         }
+
+        schedule = self.config.schedule
+        hot_announced = False
+
+        async def on_prepare_hot() -> None:
+            nonlocal analysis, cached_quote
+            if not schedule.hot_path_enabled:
+                return
+            analysis = await self._analyze()
+            cached_quote = await quote_gas(self.pool, self.config.gas, attempt=0)
+            self.log("[HOT] PREPARE analysis+gas ready")
+
+        async def on_public_presign(stage_start: int, launch_report: InspectReport) -> None:
+            nonlocal analysis, cached_quote
+            lead = float(schedule.public_presign_lead_sec)
+            if not schedule.public_presign_enabled or lead <= 0:
+                return
+            presign_at = stage_start - lead
+            if time.time() < presign_at:
+                await self._wait_until(presign_at, "PUBLIC PRESIGN")
+            if analysis is None:
+                analysis = await self._analyze()
+            chain_sale = analysis.get("sale")
+            meta = (analysis or {}).get("meta") or {}
+            if cached_quote is None:
+                cached_quote = await quote_gas(self.pool, self.config.gas, attempt=0)
+            quote = cached_quote
+            for cw in ctx.active_wallets:
+                if cw.done:
+                    continue
+                stage = ctx.current_stage(cw)
+                if not stage or not use_chain_public_mint(stage):
+                    continue
+                st, _ = stage_bounds(stage)
+                if st != stage_start:
+                    continue
+                stage_report = self._report_for_stage(
+                    launch_report,
+                    stage,
+                    chain_sale,
+                    meta,
+                    int(time.time()),
+                )
+                rpc_url = url_map.get(cw.address.lower())
+                try:
+                    cw.presigned = await self._prepare_wallet(
+                        stage_report,
+                        cw.wallet,
+                        quote,
+                        rpc_url=rpc_url,
+                    )
+                    self.log(
+                        f"[PUBLIC] {cw.label} presigned estimateGas+sign "
+                        f"T-{lead:g}s before stage open"
+                    )
+                except Exception as exc:
+                    cw.presigned = None
+                    self.log(f"[PUBLIC] {cw.label} presign failed: {exc}")
 
         async def maybe_sync_stages(*, force: bool = False) -> None:
             nonlocal last_stage_sync_at
@@ -351,9 +412,16 @@ class MintController:
                         next_wake = wake if next_wake is None else min(next_wake, wake)
                 if next_wake is None:
                     continue
-                report = await self._wait_stage_schedule(next_wake, report)
-                await maybe_sync_stages(force=True)
+                report = await self._wait_stage_schedule(
+                    next_wake,
+                    report,
+                    on_after_prepare=on_prepare_hot,
+                    on_before_armed=on_public_presign,
+                    skip_armed_refresh=schedule.hot_path_enabled,
+                )
+                # FINAL refresh inside wait updates report; PREPARE analysis may be stale.
                 analysis = None
+                await maybe_sync_stages(force=True)
                 continue
 
             if not probe_batch:
@@ -362,13 +430,58 @@ class MintController:
                         chase_wallet.finish(skip_no_eligible(chase_wallet), "NO_ELIGIBLE_STAGE")
                 break
 
-            await maybe_sync_stages()
-            report = await self._refresh_report(report)
-            if analysis is None:
-                analysis = await self._analyze()
+            probe_stage = ctx.current_stage(probe_batch[0]) if probe_batch else None
+            wall = int(time.time())
+            hot = bool(
+                probe_stage
+                and hot_path_active(
+                    probe_stage,
+                    wall,
+                    schedule.eligibility_retry_sec,
+                    enabled=schedule.hot_path_enabled,
+                )
+            )
+            public_only = bool(
+                probe_batch
+                and probe_stage
+                and all(
+                    use_chain_public_mint(stage)
+                    for cw in probe_batch
+                    if (stage := ctx.current_stage(cw)) is not None
+                )
+            )
+            if hot:
+                if not hot_announced:
+                    if public_only:
+                        self.log("[HOT] stage window: skip heavy refresh; public chain mint")
+                    else:
+                        self.log("[HOT] stage window: skip heavy refresh; OpenSea /mint first")
+                    hot_announced = True
+            else:
+                hot_announced = False
+                await maybe_sync_stages()
+            if hot and schedule.hot_skip_refresh:
+                if analysis is None:
+                    analysis = await self._analyze()
+            else:
+                report = await self._refresh_report(report, analysis=analysis)
+                if analysis is None:
+                    analysis = await self._analyze()
             chain_sale = analysis.get("sale")
             meta = (analysis or {}).get("meta") or {}
-            if report.sale.status == SaleStatus.SOLD_OUT:
+            sold_status = report.sale.status
+            if hot and schedule.hot_skip_refresh and probe_stage:
+                total = meta.get("total_supply")
+                max_supply = meta.get("max_supply")
+                sold_status = sale_from_stage(
+                    probe_stage,
+                    wall,
+                    total_supply=total,
+                    max_supply=max_supply,
+                ).status
+            elif chain_sale is not None and hot and schedule.hot_skip_refresh:
+                sold_status = chain_sale.status
+            if sold_status == SaleStatus.SOLD_OUT:
                 note_sold_out("refresh", "SOLD_OUT")
                 for chase_wallet in ctx.active_wallets:
                     chase_wallet.finish(
@@ -376,7 +489,12 @@ class MintController:
                         "skipped",
                     )
                 break
-            quote = await quote_gas(self.pool, self.config.gas, attempt=0)
+            if hot and cached_quote is not None:
+                quote = cached_quote
+            else:
+                quote = await quote_gas(self.pool, self.config.gas, attempt=0)
+                if hot:
+                    cached_quote = quote
             conc = self._concurrency()
             shard_urls = [u for u in url_map.values() if u]
             sems = {url: asyncio.Semaphore(conc) for url in dict.fromkeys(shard_urls)}
@@ -394,13 +512,61 @@ class MintController:
                         stage,
                         chain_sale,
                         meta,
-                        now,
+                        int(time.time()),
                     )
                     label = (stage.get("label") or stage.get("stage_type") or "stage").strip()
                     wallet = chase_wallet.wallet
                     rpc_url = url_map.get(wallet.address.lower())
 
+                    opensea_plan: TxPlan | None = None
                     if use_chain_public_mint(stage):
+                        prepared = chase_wallet.presigned
+                        if prepared is not None:
+                            start_bound, _ = stage_bounds(stage)
+                            if start_bound and time.time() < start_bound:
+                                await self._wait_until(start_bound, "PUBLIC OPEN")
+                            probe = await self._probe_chain_eligible(
+                                stage_report, wallet.address, rpc_url
+                            )
+                            if probe is False:
+                                chase_wallet.presigned = None
+                                self.log(
+                                    f"[CHASE] {wallet.label} not eligible [{label}] -> next stage"
+                                )
+                                if is_public_final_stage(stage):
+                                    chase_wallet.finish(
+                                        {
+                                            "wallet": wallet.label,
+                                            "address": wallet.address,
+                                            "status": "SKIP",
+                                            "error": f"not eligible for public stage [{label}]",
+                                            "chase_status": "NOT_ELIGIBLE",
+                                        },
+                                        "NOT_ELIGIBLE",
+                                    )
+                                    return
+                                if not ctx.advance_stage(chase_wallet):
+                                    chase_wallet.finish(
+                                        skip_no_eligible(chase_wallet), "NO_ELIGIBLE_STAGE"
+                                    )
+                                return
+                            if probe is not True:
+                                await asyncio.sleep(
+                                    max(0.05, float(schedule.public_not_started_probe_sec))
+                                )
+                                return
+                            chase_wallet.presigned = None
+                            self.log(
+                                f"[CHASE] {wallet.label} eligible [{label}] -> send presigned tx"
+                            )
+                            item = await self._mint_with_retry(
+                                stage_report, prepared, stop=stop
+                            )
+                            if item.get("sold_out"):
+                                note_sold_out(wallet.address, str(item.get("error") or "sold out"))
+                            chase_wallet.finish(item, str(item.get("status") or "ERROR"))
+                            return
+
                         probe = await self._probe_chain_eligible(
                             stage_report, wallet.address, rpc_url
                         )
@@ -443,6 +609,7 @@ class MintController:
                                 note_sold_out,
                             )
                             return
+                        opensea_plan = mint_probe.plan
 
                     self.log(f"[CHASE] {wallet.label} eligible [{label}] -> mint")
                     if rpc_url and rpc_url in sems:
@@ -454,6 +621,7 @@ class MintController:
                                 rpc_url,
                                 stop,
                                 note_sold_out,
+                                opensea_plan=opensea_plan,
                             )
                     else:
                         item = await self._mint_one_wallet(
@@ -463,6 +631,7 @@ class MintController:
                             rpc_url,
                             stop,
                             note_sold_out,
+                            opensea_plan=opensea_plan,
                         )
                     chase_wallet.finish(item, str(item.get("status") or "ERROR"))
                 except PriceGuardError as exc:
@@ -522,11 +691,15 @@ class MintController:
         rpc_url: str | None,
         stop: asyncio.Event,
         note_sold_out,
+        *,
+        opensea_plan: TxPlan | None = None,
     ) -> dict[str, Any]:
         if self.config.wallets.stop_on_sold_out and stop.is_set():
             return self._skip_unsent(report, wallet, "sold out, not sent")
         try:
-            prepared = await self._prepare_wallet(report, wallet, quote, rpc_url=rpc_url)
+            prepared = await self._prepare_wallet(
+                report, wallet, quote, rpc_url=rpc_url, opensea_plan=opensea_plan
+            )
         except _SoldOut as exc:
             note_sold_out(wallet.address, str(exc))
             return self._skip_unsent(report, wallet, f"sold out, not sent ({exc})")
@@ -586,12 +759,22 @@ class MintController:
             results.append(item)
         return results
 
-    async def _wait_stage_schedule(self, start: int, report: InspectReport) -> InspectReport:
+    async def _wait_stage_schedule(
+        self,
+        start: int,
+        report: InspectReport,
+        *,
+        on_after_prepare: Any = None,
+        on_before_armed: Any = None,
+        skip_armed_refresh: bool = False,
+    ) -> InspectReport:
         prepare_lead = self.config.schedule.prepare_lead_sec
         sign_lead = self.config.schedule.sign_lead_sec
         if prepare_lead > sign_lead and time.time() < start - prepare_lead:
             await self._wait_until(start - prepare_lead, "PREPARE_LEAD")
         await self._wait_until(start - sign_lead, "PREPARE")
+        if on_after_prepare is not None:
+            await on_after_prepare()
         self.log(
             f"T-{sign_lead}s: stage chase; wallets estimateGas+sign+send when eligible at stage open"
         )
@@ -607,7 +790,12 @@ class MintController:
             )
             if not still_chase:
                 raise ConfigError("sale became ENDED before launch")
+        if on_before_armed is not None:
+            await on_before_armed(start, report)
         await self._wait_until(start, "ARMED")
+        if skip_armed_refresh:
+            self.log("[HOT] ARMED — skip post-ARMED refresh; chase uses OpenSea /mint first")
+            return report
         return await self._refresh_report(report)
 
     async def _sync_chase_stage_times(self, ctx: ChaseContext) -> None:
@@ -640,7 +828,14 @@ class MintController:
                 self._max_unit_price_wei(),
                 native_symbol=self.chain.native_symbol,
             )
-            return OpenSeaMintProbe(True)
+            fallback = self.config.gas.fallback_gas_limit or 280000
+            plan = build_opensea_mint_plan(
+                tx,
+                address,
+                self.chain.chain_id,
+                fallback_gas_limit=fallback,
+            )
+            return OpenSeaMintProbe(True, plan=plan)
         except PriceGuardError:
             raise
         except EngineError as exc:
@@ -791,8 +986,14 @@ class MintController:
             else:
                 await asyncio.sleep(0.002)
 
-    async def _refresh_report(self, report: InspectReport) -> InspectReport:
-        analysis = await self._analyze()
+    async def _refresh_report(
+        self,
+        report: InspectReport,
+        *,
+        analysis: dict[str, Any] | None = None,
+    ) -> InspectReport:
+        if analysis is None:
+            analysis = await self._analyze()
         chain_sale = analysis.get("sale")
         sale, mint_route, stage_dict, stage_notes = await self._effective_sale(chain_sale, analysis)
         report.sale = sale
@@ -815,8 +1016,14 @@ class MintController:
         quote: dict[str, int],
         nonce: int | None = None,
         rpc_url: str | None = None,
+        *,
+        opensea_plan: TxPlan | None = None,
     ) -> dict[str, Any]:
-        plan = await self._build_mint_plan(report, wallet.address)
+        if opensea_plan is not None:
+            plan = opensea_plan
+            self._enforce_price_guard_on_plan(plan)
+        else:
+            plan = await self._build_mint_plan(report, wallet.address)
         if nonce is None:
             nonce = await self.pool.get_nonce(wallet.address, "pending", prefer=rpc_url)
         tx = {

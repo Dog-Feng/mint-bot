@@ -206,6 +206,17 @@ def stage_index_in_sequence(sequence: list[dict[str, Any]], stage: dict[str, Any
     return 0
 
 
+def hot_path_active(stage: dict[str, Any], wall_now: int, retry_sec: int, *, enabled: bool = True) -> bool:
+    """Stage open window where we skip heavy refresh/analyze (through eligibility retry)."""
+    if not enabled or retry_sec <= 0:
+        return False
+    start, _ = stage_bounds(stage)
+    if not start:
+        return False
+    start_i = int(start)
+    return start_i <= wall_now < start_i + retry_sec
+
+
 def eligibility_retry_window_open(stage: dict[str, Any], wall_now: int, retry_sec: int) -> bool:
     """True while wall clock is within [stage_start, stage_start + retry_sec)."""
     if retry_sec <= 0:

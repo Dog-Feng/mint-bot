@@ -20,6 +20,7 @@ class ChaseWallet:
     result: dict[str, Any] | None = None
     chase_status: str = "pending"
     last_probe_at: float = 0.0
+    presigned: dict[str, Any] | None = None
 
     @property
     def label(self) -> str:
@@ -46,6 +47,7 @@ class ChaseContext:
 
     def advance_stage(self, wallet: ChaseWallet) -> bool:
         """Move to next stage. Returns False if no more stages."""
+        wallet.presigned = None
         wallet.stage_index += 1
         if wallet.stage_index >= len(self.sequence):
             return False
