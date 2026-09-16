@@ -14,6 +14,7 @@ from mint_engine.rpc.pool import RpcPool
 from mint_engine.sweep.collector import _open_pool
 from mint_engine.transaction.gas import apply_gas, quote_gas, resolve_gas_limit
 from mint_engine.transaction.signer import sign_tx
+from mint_engine.treasury.log import logger as treasury_logger
 from mint_engine.wallet.manager import ResolvedWallet, WalletManager
 
 NATIVE_TRANSFER_FALLBACK_GAS = 21_000
@@ -56,6 +57,7 @@ def emit_run_event(events: list[str], sink: list[str] | None, message: str) -> N
     events.append(message)
     if sink is not None:
         sink.append(message)
+    treasury_logger.info("%s", message)
 
 
 def parse_distribute_source_key(text: str) -> str:

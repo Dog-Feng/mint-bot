@@ -7,6 +7,7 @@ from mint_engine.discovery.opensea_stages import (
     pick_auto_stage,
     resolve_drop_stage,
     sale_from_stage,
+    stage_group_key,
     stage_status,
     use_chain_public_mint,
 )
@@ -94,6 +95,11 @@ class TestOpenSeaStages(unittest.TestCase):
         ]
         self.assertTrue(drop_has_future_mint_window(stages, 50))
         self.assertFalse(drop_has_future_mint_window(stages, 950))
+
+    def test_stage_group_key_stable(self):
+        a = _stage("GTD", "signed_presale", 100, 200, uuid="gtd")
+        b = _stage("GTD", "signed_presale", 100, 200, uuid="gtd")
+        self.assertEqual(stage_group_key(a), stage_group_key(b))
 
     def test_auto_overlap_prefers_later_start_public(self):
         stages = [

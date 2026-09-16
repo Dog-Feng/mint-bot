@@ -43,24 +43,63 @@ def parse_opensea_input(value: str) -> dict:
     raise ConfigError(f"cannot parse OpenSea URL: {text}")
 
 
+async def _collection_slug_for_contract(chain: str, contract: str) -> str | None:
+    chain_key = (chain or "").strip().lower()
+    address = checksum(contract)
+    meta = await _get_optional(
+        f"https://api.opensea.io/api/v2/chain/{chain_key}/contract/{address}"
+    )
+    if isinstance(meta, dict):
+        coll = meta.get("collection")
+        if isinstance(coll, str) and coll.strip():
+            return coll.strip()
+        if isinstance(coll, dict):
+            slug = coll.get("slug") or coll.get("collection")
+            if slug:
+                return str(slug).strip()
+    listing = await _get_optional(
+        f"https://api.opensea.io/api/v2/chain/{chain_key}/contract/{address}/nfts?limit=1"
+    )
+    if isinstance(listing, dict):
+        for nft in listing.get("nfts") or []:
+            if not isinstance(nft, dict):
+                continue
+            coll = nft.get("collection")
+            if isinstance(coll, str) and coll.strip():
+                return coll.strip()
+            if isinstance(coll, dict):
+                slug = coll.get("slug")
+                if slug:
+                    return str(slug).strip()
+    return None
+
+
 async def resolve_opensea(url_or_slug: str) -> OpenSeaPreview:
     settings = get_settings()
     if not settings.opensea_api_key:
         raise ConfigError("OPENSEA_API_KEY is missing")
     parsed = parse_opensea_input(url_or_slug)
     await ensure_opensea_client()
+    asset_source_url: str | None = None
     if parsed["kind"] == "asset":
         chain = parsed["chain"]
         contract = parsed["contract"]
-        return OpenSeaPreview(
-            slug=contract,
-            url=url_or_slug,
-            chain=chain,
-            chain_id=chain_id_from_opensea(chain),
-            contract=contract,
-            contracts=[{"address": contract, "chain": chain}],
-            notes=["parsed from OpenSea asset URL"],
-        )
+        slug = await _collection_slug_for_contract(chain, contract)
+        if not slug:
+            return OpenSeaPreview(
+                slug=contract,
+                url=url_or_slug,
+                chain=chain,
+                chain_id=chain_id_from_opensea(chain),
+                contract=contract,
+                contracts=[{"address": contract, "chain": chain}],
+                notes=[
+                    "parsed from OpenSea asset URL",
+                    "could not resolve collection slug; drop stages unavailable",
+                ],
+            )
+        asset_source_url = url_or_slug
+        parsed = {"kind": "slug", "slug": slug}
     slug = parsed["slug"]
     collection = await _get(f"https://api.opensea.io/api/v2/collections/{slug}")
     drop = await _get_optional(f"https://api.opensea.io/api/v2/drops/{slug}")
@@ -87,11 +126,13 @@ async def resolve_opensea(url_or_slug: str) -> OpenSeaPreview:
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     notes = [f"resolved slug {slug}"]
+    if asset_source_url:
+        notes.append(f"from OpenSea asset URL {asset_source_url}")
     if drop and drop.get("drop_type"):
         notes.append(f"drop_type={drop.get('drop_type')}")
     return OpenSeaPreview(
         slug=slug,
-        url=collection.get("opensea_url") or f"https://opensea.io/collection/{slug}",
+        url=asset_source_url or collection.get("opensea_url") or f"https://opensea.io/collection/{slug}",
         chain=chain_name,
         chain_id=chain_id,
         contract=contract,

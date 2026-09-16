@@ -1559,7 +1559,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ run_id: runId, client_id: getClientId() }),
         }).catch(() => {});
-      }, 3000);
+      }, 5000);
     }
 
     function tailRunEvents(events) {

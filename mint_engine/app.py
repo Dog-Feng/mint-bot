@@ -48,6 +48,7 @@ from mint_engine.treasury import (
     run_collect,
     run_distribute,
 )
+from mint_engine.treasury.log import logger as treasury_logger
 from mint_engine.transaction.gas import public_gas_snapshot, quote_gas
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -300,6 +301,7 @@ async def run_active(client_id: str):
 @app.post("/api/treasury/balance")
 async def treasury_balance(payload: TreasuryBalanceRequest):
     try:
+        treasury_logger.info("API treasury/balance chain_id=%s", payload.chain_id)
         return await query_balances(payload.chain_id, payload.rpc_urls, payload.private_keys)
     except EngineError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
@@ -310,8 +312,8 @@ async def treasury_balance(payload: TreasuryBalanceRequest):
 @app.post("/api/treasury/distribute/preview")
 async def treasury_distribute_preview(payload: TreasuryDistributeRequest):
     try:
-        _log.info(
-            "treasury distribute preview chain_id=%s targets=%s",
+        treasury_logger.info(
+            "API distribute/preview chain_id=%s targets=%s",
             payload.chain_id,
             len(payload.targets),
         )
@@ -325,6 +327,7 @@ async def treasury_distribute_preview(payload: TreasuryDistributeRequest):
 @app.post("/api/treasury/distribute/run")
 async def treasury_distribute_run(payload: TreasuryDistributeRequest):
     try:
+        treasury_logger.info("API distribute/run chain_id=%s", payload.chain_id)
         return await run_distribute(payload)
     except EngineError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
@@ -346,8 +349,8 @@ async def treasury_distribute_start(payload: TreasuryDistributeStartRequest):
         body = payload.model_dump(exclude={"client_id"})
         req = TreasuryDistributeRequest.model_validate(body)
         plan_n = len(req.execute_plan)
-        _log.info(
-            "treasury distribute start client_id=%s chain_id=%s plan_items=%s",
+        treasury_logger.info(
+            "API distribute/start client_id=%s chain_id=%s plan_items=%s",
             payload.client_id[:8],
             req.chain_id,
             plan_n,
@@ -365,6 +368,12 @@ async def treasury_collect_start(payload: TreasuryCollectStartRequest):
     try:
         body = payload.model_dump(exclude={"client_id"})
         req = TreasuryCollectRequest.model_validate(body)
+        treasury_logger.info(
+            "API collect/start client_id=%s chain_id=%s sources=%s",
+            payload.client_id[:8],
+            req.chain_id,
+            len(req.source_private_keys),
+        )
         run_id = await start_treasury_collect_run(req, payload.client_id.strip())
         return {"run_id": run_id, "status": "running"}
     except EngineError as exc:
@@ -376,6 +385,7 @@ async def treasury_collect_start(payload: TreasuryCollectStartRequest):
 @app.post("/api/treasury/collect/preview")
 async def treasury_collect_preview(payload: TreasuryCollectRequest):
     try:
+        treasury_logger.info("API collect/preview chain_id=%s", payload.chain_id)
         return await preview_collect(payload)
     except EngineError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
@@ -386,6 +396,7 @@ async def treasury_collect_preview(payload: TreasuryCollectRequest):
 @app.post("/api/treasury/collect/run")
 async def treasury_collect_run(payload: TreasuryCollectRequest):
     try:
+        treasury_logger.info("API collect/run chain_id=%s", payload.chain_id)
         return await run_collect(payload)
     except EngineError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc

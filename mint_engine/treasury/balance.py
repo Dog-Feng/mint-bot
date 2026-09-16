@@ -7,6 +7,7 @@ from mint_engine.core.exceptions import ConfigError
 from mint_engine.core.models import WalletItem
 from mint_engine.price_guard import wei_to_native_str
 from mint_engine.treasury.helpers import open_pool, parse_private_key_lines
+from mint_engine.treasury.log import logger as treasury_logger
 from mint_engine.wallet.manager import WalletManager
 
 async def query_balances(
@@ -22,6 +23,11 @@ async def query_balances(
 
     chain = get_chain(chain_id)
     items: list[dict[str, Any]] = []
+    treasury_logger.info(
+        "balance query chain_id=%s wallets=%s",
+        chain_id,
+        len(keys),
+    )
     pool = await open_pool(chain_id, rpc_urls)
     try:
         for idx, key in enumerate(keys):
@@ -56,6 +62,13 @@ async def query_balances(
             except Exception as exc:
                 row["error"] = str(exc)
             items.append(row)
+        ok = sum(1 for row in items if row.get("status") == "OK")
+        treasury_logger.info(
+            "balance query done chain_id=%s ok=%s/%s",
+            chain_id,
+            ok,
+            len(items),
+        )
         return {
             "chain_id": chain.chain_id,
             "chain_name": chain.name,

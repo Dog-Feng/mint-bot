@@ -5,6 +5,17 @@ import uvicorn
 from mint_engine.config.settings import get_settings
 
 
+class _ComponentTag(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name.startswith("mint_engine.treasury"):
+            record.component = "treasury"
+        elif record.name.startswith("mint_engine.app"):
+            record.component = "app"
+        else:
+            record.component = "mint"
+        return True
+
+
 def _configure_logging() -> None:
     logging.basicConfig(level=logging.WARNING, force=True)
     for name in ("httpx", "httpcore", "uvicorn.access"):
@@ -13,11 +24,13 @@ def _configure_logging() -> None:
     mint = logging.getLogger("mint_engine")
     mint.setLevel(logging.INFO)
     mint.propagate = False
+    logging.getLogger("mint_engine.treasury").setLevel(logging.INFO)
     if not mint.handlers:
         handler = logging.StreamHandler()
+        handler.addFilter(_ComponentTag())
         handler.setFormatter(
             logging.Formatter(
-                "%(asctime)s %(levelname)s [mint] %(message)s",
+                "%(asctime)s %(levelname)s [%(component)s] %(message)s",
                 datefmt="%H:%M:%S",
             )
         )

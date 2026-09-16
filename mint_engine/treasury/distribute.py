@@ -8,6 +8,7 @@ from mint_engine.core.exceptions import ConfigError
 from mint_engine.core.models import TreasuryDistributeRequest
 from mint_engine.price_guard import native_unit_to_wei, wei_to_native_str
 from mint_engine.evm import checksum, is_address
+from mint_engine.treasury.log import logger as treasury_logger
 from mint_engine.treasury.helpers import (
     emit_run_event,
     open_pool,
@@ -178,6 +179,14 @@ async def preview_distribute(request: TreasuryDistributeRequest) -> dict[str, An
         )
         ready = sum(1 for row in items if row["status"] == "READY")
         can_run = ready > 0 and budget["sufficient"]
+        treasury_logger.info(
+            "distribute preview chain_id=%s source=%s targets=%s ready=%s can_run=%s",
+            chain.chain_id,
+            source.address,
+            len(targets),
+            ready,
+            can_run,
+        )
         return {
             "mode": "distribute",
             "chain_id": chain.chain_id,
@@ -357,6 +366,13 @@ async def run_distribute(
         if not budget.get("sufficient"):
             raise ConfigError(budget.get("message") or "预览合计金额 + gas 超过源钱包余额")
 
+        treasury_logger.info(
+            "distribute run start chain_id=%s source=%s ready=%s locked_plan=%s",
+            request.chain_id,
+            source.address,
+            preview["ready_count"],
+            locked,
+        )
         nonce = await pool.get_nonce(source.address, "pending")
         first = True
         cancelled = False
@@ -425,6 +441,13 @@ async def run_distribute(
             1
             for r in results
             if r.get("run_status") not in _non_failure and r.get("run_status") is not None
+        )
+        treasury_logger.info(
+            "distribute run done success=%s failed=%s cancelled=%s aborted=%s",
+            success,
+            failed,
+            cancelled_count,
+            aborted_count,
         )
         return {
             **preview,

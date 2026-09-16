@@ -9,6 +9,7 @@ from mint_engine.core.models import TreasuryCollectRequest
 from mint_engine.evm import checksum, is_address
 from mint_engine.core.exceptions import ConfigError
 from mint_engine.price_guard import native_unit_to_wei, wei_to_native_str
+from mint_engine.treasury.log import logger as treasury_logger
 from mint_engine.treasury.helpers import (
     emit_run_event,
     open_pool,
@@ -90,6 +91,14 @@ async def preview_collect(request: TreasuryCollectRequest) -> dict[str, Any]:
                 }
             )
         ready = sum(1 for row in items if row["status"] == "READY")
+        treasury_logger.info(
+            "collect preview chain_id=%s dest=%s sources=%s ready=%s mode=%s",
+            chain.chain_id,
+            dest,
+            len(wallets),
+            ready,
+            mode,
+        )
         return {
             "mode": "collect",
             "chain_id": chain.chain_id,
@@ -132,6 +141,13 @@ async def run_collect(
     sem = asyncio.Semaphore(max(1, request.concurrency))
 
     sym = preview["native_symbol"]
+    treasury_logger.info(
+        "collect run start chain_id=%s dest=%s ready=%s concurrency=%s",
+        request.chain_id,
+        dest,
+        preview["ready_count"],
+        request.concurrency,
+    )
 
     async def one(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if cancel and cancel.is_set():
@@ -192,6 +208,11 @@ async def run_collect(
         results = [by_label[row["label"]] for row in preview["items"] if row["label"] in by_label]
         success = sum(1 for r in results if r.get("run_status") == "SUCCESS")
         failed = sum(1 for r in results if r.get("run_status") not in {"SUCCESS", "SKIP", "READY"})
+        treasury_logger.info(
+            "collect run done success=%s failed=%s",
+            success,
+            failed,
+        )
         return {
             **preview,
             "results": results,

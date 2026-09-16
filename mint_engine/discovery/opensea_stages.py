@@ -284,3 +284,33 @@ def use_chain_public_mint(stage: dict[str, Any] | None) -> bool:
     if stage is None:
         return True
     return (stage.get("stage_type") or "").lower() == "public_sale"
+
+
+def stage_group_key(stage: dict[str, Any] | None) -> str:
+    uid = _stage_uuid(stage or {})
+    if uid:
+        return uid
+    if not stage:
+        return ""
+    start, _ = stage_bounds(stage)
+    label = (stage.get("label") or stage.get("stage_type") or "").strip()
+    return f"{label}:{start or '?'}"
+
+
+def stage_max_per_wallet(stage: dict[str, Any] | None) -> int | None:
+    if not stage:
+        return None
+    raw = stage.get("max_per_wallet")
+    if raw is None or str(raw).strip() == "":
+        return None
+    return int(raw)
+
+
+def strictest_max_per_wallet(stages: list[dict[str, Any]]) -> int | None:
+    """Minimum max_per_wallet across chase sequence (tightest limit)."""
+    limits: list[int] = []
+    for stage in build_stage_sequence(stages):
+        cap = stage_max_per_wallet(stage)
+        if cap is not None:
+            limits.append(cap)
+    return min(limits) if limits else None

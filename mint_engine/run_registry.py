@@ -15,7 +15,7 @@ from mint_engine.discovery.opensea import prepare_config
 
 _log = logging.getLogger("mint_engine.run")
 
-HEARTBEAT_STALE_SEC = 12.0
+HEARTBEAT_STALE_SEC = 45.0
 WATCHDOG_INTERVAL_SEC = 3.0
 MAX_RUN_RECORDS = 200
 

@@ -21,6 +21,8 @@ class ChaseWallet:
     chase_status: str = "pending"
     last_probe_at: float = 0.0
     presigned: dict[str, Any] | None = None
+    opensea_probe_cached: Any | None = None
+    opensea_probe_cached_at: float = 0.0
 
     @property
     def label(self) -> str:
@@ -48,6 +50,8 @@ class ChaseContext:
     def advance_stage(self, wallet: ChaseWallet) -> bool:
         """Move to next stage. Returns False if no more stages."""
         wallet.presigned = None
+        wallet.opensea_probe_cached = None
+        wallet.opensea_probe_cached_at = 0.0
         wallet.stage_index += 1
         if wallet.stage_index >= len(self.sequence):
             return False
@@ -65,5 +69,19 @@ def init_chase_wallets(signers, sequence: list[dict[str, Any]], auto_stage: dict
     return ChaseContext(sequence=sequence, wallets=rows)
 
 
+def is_terminal_chase_stage(
+    ctx: ChaseContext,
+    chase_wallet: ChaseWallet,
+    stage: dict[str, Any] | None,
+) -> bool:
+    """No further stage to try after ineligible / stage-local sold out."""
+    if use_chain_public_mint(stage):
+        return True
+    if not ctx.sequence:
+        return True
+    return chase_wallet.stage_index >= len(ctx.sequence) - 1
+
+
 def is_public_final_stage(stage: dict[str, Any] | None) -> bool:
+    """Deprecated alias; prefer is_terminal_chase_stage with context."""
     return use_chain_public_mint(stage)
