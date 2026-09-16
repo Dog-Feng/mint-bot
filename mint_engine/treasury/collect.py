@@ -167,8 +167,6 @@ async def _resolve_collect_amount_wei(
     fixed_wei: int,
     gas,
 ) -> int:
-    if mode == "fixed":
-        return fixed_wei
     value, _fee, status = await _send_amount_for_wallet(pool, wallet, dest, mode, fixed_wei, gas)
     if status != "READY" or value <= 0:
         raise ConfigError(f"{wallet.label} 无法归集：{status}")

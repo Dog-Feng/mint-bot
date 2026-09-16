@@ -133,6 +133,29 @@ async def quote_native_transfer(
     return gas_limit, quote, fee_wei
 
 
+async def fit_native_transfer_to_balance(
+    pool: RpcPool,
+    from_addr: str,
+    to_addr: str,
+    value_wei: int,
+    gas: GasConfig,
+) -> tuple[int, int, dict[str, int], int, int]:
+    """Cap value so value + estimated fee <= balance. Returns value, fee, quote, gas_limit, balance."""
+    balance = await pool.get_balance(from_addr)
+    gas_limit, quote, fee_wei = await quote_native_transfer(pool, from_addr, to_addr, value_wei, gas)
+    if balance >= value_wei + fee_wei:
+        return value_wei, fee_wei, quote, gas_limit, balance
+    value_wei = max(balance - fee_wei, 0)
+    if value_wei <= 0:
+        return 0, fee_wei, quote, gas_limit, balance
+    gas_limit, quote, fee_wei = await quote_native_transfer(pool, from_addr, to_addr, value_wei, gas)
+    if balance < value_wei + fee_wei:
+        value_wei = max(balance - fee_wei, 0)
+        if value_wei > 0:
+            gas_limit, quote, fee_wei = await quote_native_transfer(pool, from_addr, to_addr, value_wei, gas)
+    return value_wei, fee_wei, quote, gas_limit, balance
+
+
 async def send_native_transfer(
     pool: RpcPool,
     wallet: ResolvedWallet,
@@ -157,18 +180,31 @@ async def send_native_transfer(
     chain = get_chain(pool.expected_chain_id)
     use_nonce = nonce if nonce is not None else await pool.get_nonce(wallet.address, "pending")
     gas_limit, quote, fee_wei = await quote_native_transfer(pool, wallet.address, dest, value_wei, gas)
-    if not skip_balance_check:
-        balance = await pool.get_balance(wallet.address)
+    balance = await pool.get_balance(wallet.address)
+    if skip_balance_check:
         if balance < value_wei + fee_wei:
-            return {
-                "status": "INSUFFICIENT_BALANCE",
-                "error": f"need {wei_to_native_str(value_wei + fee_wei)} {chain.native_symbol}, "
-                f"have {wei_to_native_str(balance)}",
-                "tx_hash": None,
-                "value_wei": value_wei,
-                "balance_wei": balance,
-                "fee_wei": fee_wei,
-            }
+            value_wei, fee_wei, quote, gas_limit, balance = await fit_native_transfer_to_balance(
+                pool, wallet.address, dest, value_wei, gas
+            )
+            if value_wei <= 0:
+                return {
+                    "status": "INSUFFICIENT_BALANCE",
+                    "error": f"余额不足以支付 gas（约 {wei_to_native_str(fee_wei)} {chain.native_symbol}）",
+                    "tx_hash": None,
+                    "value_wei": 0,
+                    "balance_wei": balance,
+                    "fee_wei": fee_wei,
+                }
+    elif balance < value_wei + fee_wei:
+        return {
+            "status": "INSUFFICIENT_BALANCE",
+            "error": f"need {wei_to_native_str(value_wei + fee_wei)} {chain.native_symbol}, "
+            f"have {wei_to_native_str(balance)}",
+            "tx_hash": None,
+            "value_wei": value_wei,
+            "balance_wei": balance,
+            "fee_wei": fee_wei,
+        }
     plan = TxPlan(
         to=dest,
         data="0x",
