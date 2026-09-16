@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+_log = logging.getLogger("mint_engine.app")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -307,6 +310,11 @@ async def treasury_balance(payload: TreasuryBalanceRequest):
 @app.post("/api/treasury/distribute/preview")
 async def treasury_distribute_preview(payload: TreasuryDistributeRequest):
     try:
+        _log.info(
+            "treasury distribute preview chain_id=%s targets=%s",
+            payload.chain_id,
+            len(payload.targets),
+        )
         return await preview_distribute(payload)
     except EngineError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
@@ -337,6 +345,13 @@ async def treasury_distribute_start(payload: TreasuryDistributeStartRequest):
     try:
         body = payload.model_dump(exclude={"client_id"})
         req = TreasuryDistributeRequest.model_validate(body)
+        plan_n = len(req.execute_plan)
+        _log.info(
+            "treasury distribute start client_id=%s chain_id=%s plan_items=%s",
+            payload.client_id[:8],
+            req.chain_id,
+            plan_n,
+        )
         run_id = await start_treasury_distribute_run(req, payload.client_id.strip())
         return {"run_id": run_id, "status": "running"}
     except EngineError as exc:
