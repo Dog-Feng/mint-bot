@@ -490,6 +490,14 @@
                 <option value="custom">统一指定</option>
               </select>
             </div>
+            <div>
+              <label>公开轮策略</label>
+              <select id="publicBlindEnabled">
+                <option value="false" selected>预签（T−1s estimate+签，到点 probe 后发）</option>
+                <option value="true">盲打（开抢前连发，不做 eth_call 探针）</option>
+              </select>
+              <div class="hint">仅 <code>public_sale</code> 阶段生效；与预签互斥。WL/GTD 仍走 OpenSea Snipe。</div>
+            </div>
           </div>
           <div class="row hidden" id="recipientRow">
             <div>
@@ -1098,7 +1106,9 @@
           extra_params: extra,
         },
         gas: currentGasConfig(),
-        schedule: {},
+        schedule: {
+          public_blind_enabled: $("publicBlindEnabled").value === "true",
+        },
       };
     }
 
