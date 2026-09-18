@@ -26,12 +26,34 @@ def test_advance_stage_clears_presigned():
         label = "w"
         address = "0x0"
 
-    ctx = ChaseContext(sequence=[{"uuid": "1"}, {"uuid": "2"}], wallets=[])
+    ctx = ChaseContext(sequence=[{"uuid": "1"}, {"uuid": "2"}], wallets=[], blind_gas_limit=99_000)
     cw = ChaseWallet(wallet=_W(), stage_index=0, presigned={"raw": "0x"})
     ctx.wallets.append(cw)
     assert ctx.advance_stage(cw)
     assert cw.presigned is None
+    assert ctx.blind_gas_limit is None
     assert cw.stage_index == 1
+
+
+def test_schedule_opensea_snipe_defaults():
+    from mint_engine.core.models import ScheduleConfig
+
+    s = ScheduleConfig()
+    assert s.opensea_snipe_lead_sec == 2.0
+    assert s.opensea_snipe_mint_interval_sec == 0.1
+    assert s.opensea_snipe_stop_after_start_sec == 30.0
+
+
+def test_schedule_public_blind_defaults():
+    from mint_engine.core.models import ScheduleConfig
+
+    s = ScheduleConfig()
+    assert s.public_blind_enabled is False
+    assert s.public_blind_warm_sec == 2.0
+    assert s.public_blind_fire_sec == 1.0
+    assert s.public_blind_retry_interval_sec == 0.1
+    assert s.public_blind_max_attempts == 0
+    assert s.public_blind_stop_after_start_sec == 30.0
 
 
 def test_hot_path_active_matches_retry_window():

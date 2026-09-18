@@ -55,6 +55,9 @@ from mint_engine.discovery.opensea_stages import (
 from mint_engine.monitor.receipt import decode_revert, is_sold_out, parse_token_ids, revert_blob
 from mint_engine.rpc.pool import RpcPool, short_rpc_url
 from mint_engine.transaction.gas import quote_gas, worst_case_gas_reserve_wei
+
+OPENSEA_SNIPE_GAS_LIMIT = 280_000
+OPENSEA_SNIPE_RECEIPT_TIMEOUT_SEC = 10.0
 from mint_engine.transaction.signer import sign_tx
 from mint_engine.wallet.manager import WalletManager
 
@@ -431,6 +434,404 @@ class MintController:
                     cw.presigned = None
                     self.log(f"[PUBLIC] {cw.label} presign failed: {exc}")
 
+        async def on_public_blind(stage_start: int, launch_report: InspectReport) -> None:
+            nonlocal analysis, report
+            warm_lead = float(schedule.public_blind_warm_sec)
+            fire_lead = float(schedule.public_blind_fire_sec)
+            if warm_lead <= 0 or fire_lead <= 0:
+                self.log("[BLIND] disabled: warm/fire lead must be > 0")
+                return
+            blind_batch: list[ChaseWallet] = []
+            stage_ref: dict[str, Any] | None = None
+            for cw in ctx.active_wallets:
+                if cw.done:
+                    continue
+                stage = ctx.current_stage(cw)
+                if not stage or not use_chain_public_mint(stage):
+                    continue
+                st, _ = stage_bounds(stage)
+                if st != stage_start:
+                    continue
+                stage_ref = stage
+                blind_batch.append(cw)
+            if not blind_batch or stage_ref is None:
+                return
+
+            warm_at = stage_start - warm_lead
+            if time.time() < warm_at:
+                await self._wait_until(warm_at, "BLIND WARM")
+            if analysis is None:
+                analysis = await self._analyze()
+            chain_sale = analysis.get("sale")
+            meta = (analysis or {}).get("meta") or {}
+            now_i = int(time.time())
+            stage_report = self._report_for_stage(
+                launch_report,
+                stage_ref,
+                chain_sale,
+                meta,
+                now_i,
+            )
+            sample = blind_batch[0].wallet
+            sample_rpc = url_map.get(sample.address.lower())
+            ctx.blind_gas_limit = await self._public_blind_gas_limit_once(
+                stage_report,
+                sample,
+                sample_rpc,
+            )
+            self.log(
+                f"[BLIND] gas_limit={ctx.blind_gas_limit} (estimate x2 once) "
+                f"wallets={len(blind_batch)} T-{warm_lead:g}s warm"
+            )
+
+            fire_at = stage_start - fire_lead
+            if time.time() < fire_at:
+                await self._wait_until(fire_at, "BLIND FIRE")
+            self.log(
+                f"[BLIND] blast start T-{fire_lead:g}s (no eth_call; retry until success or deadline)"
+            )
+            deadline = stage_start + float(schedule.public_blind_stop_after_start_sec)
+
+            async def blast_one(cw: ChaseWallet) -> None:
+                if cw.done:
+                    return
+                qty_err = self._quantity_error_for_stage(stage_ref, self.config.mint.quantity)
+                if qty_err:
+                    cw.finish(
+                        {
+                            "wallet": cw.label,
+                            "address": cw.address,
+                            "status": "SKIP",
+                            "error": qty_err,
+                            "chase_status": "WALLET_LIMIT",
+                        },
+                        "WALLET_LIMIT",
+                    )
+                    return
+                rpc_url = url_map.get(cw.address.lower())
+                gas_limit = ctx.blind_gas_limit or (self.config.gas.fallback_gas_limit or 280000)
+                interval = max(0.02, float(schedule.public_blind_retry_interval_sec))
+                max_attempts = int(schedule.public_blind_max_attempts or 0)
+                attempts = 0
+                quote = await quote_gas(self.pool, self.config.gas, attempt=0)
+                while time.time() < deadline:
+                    if self._user_cancelled():
+                        cw.finish(self._skip_cancelled(stage_report, cw.wallet), "CANCELLED")
+                        return
+                    if stop.is_set() and self.config.wallets.stop_on_sold_out:
+                        cw.finish(
+                            self._skip_unsent(stage_report, cw.wallet, "sold out, not sent"),
+                            "skipped",
+                        )
+                        return
+                    if max_attempts > 0 and attempts >= max_attempts:
+                        cw.finish(
+                            {
+                                "wallet": cw.label,
+                                "address": cw.address,
+                                "status": "ERROR",
+                                "error": f"blind max attempts ({max_attempts})",
+                                "chase_status": "BLIND_EXHAUSTED",
+                            },
+                            "BLIND_EXHAUSTED",
+                        )
+                        return
+                    attempts += 1
+                    try:
+                        prepared = await self._prepare_wallet(
+                            stage_report,
+                            cw.wallet,
+                            quote,
+                            rpc_url=rpc_url,
+                            fixed_gas_limit=gas_limit,
+                        )
+                    except _SoldOut as exc:
+                        note_sold_out(cw.address, str(exc))
+                        cw.finish(
+                            self._skip_unsent(stage_report, cw.wallet, f"sold out, not sent ({exc})"),
+                            "skipped",
+                        )
+                        return
+                    except PriceGuardError as exc:
+                        cw.finish(
+                            {
+                                "wallet": cw.label,
+                                "address": cw.address,
+                                "status": "ERROR",
+                                "error": exc.message,
+                                "chase_status": "PRICE_GUARD",
+                            },
+                            "PRICE_GUARD",
+                        )
+                        return
+                    except Exception as exc:
+                        self.log(f"[BLIND] {cw.label} prepare failed: {exc}")
+                        await asyncio.sleep(interval)
+                        quote = await quote_gas(
+                            self.pool,
+                            self.config.gas,
+                            fallback_limit=gas_limit,
+                            attempt=min(attempts, 8),
+                        )
+                        continue
+                    last = await self._send_prepared(
+                        stage_report,
+                        prepared,
+                        stop=stop,
+                        receipt_timeout_sec=8.0,
+                    )
+                    if last["status"] == "SUCCESS":
+                        self.log(f"[BLIND] {cw.label} SUCCESS tx={last.get('tx_hash')}")
+                        cw.finish(last, "SUCCESS")
+                        return
+                    if last.get("sold_out"):
+                        note_sold_out(cw.address, str(last.get("error") or "sold out"))
+                        cw.finish(last, str(last.get("status") or "SOLD_OUT"))
+                        return
+                    if last["status"] == "REVERTED":
+                        self.log(
+                            f"[BLIND] {cw.label} REVERTED attempt={attempts} "
+                            f"{last.get('error') or ''}"
+                        )
+                    elif last["status"] in {"SEND_FAILED", "TIMEOUT"}:
+                        self.log(
+                            f"[BLIND] {cw.label} {last['status']} attempt={attempts} "
+                            f"{last.get('error') or ''}"
+                        )
+                    else:
+                        cw.finish(last, str(last.get("status") or "ERROR"))
+                        return
+                    quote = await quote_gas(
+                        self.pool,
+                        self.config.gas,
+                        fallback_limit=gas_limit,
+                        attempt=min(attempts, 8),
+                    )
+                    await asyncio.sleep(interval)
+                cw.finish(
+                    {
+                        "wallet": cw.label,
+                        "address": cw.address,
+                        "status": "TIMEOUT",
+                        "error": "blind blast deadline",
+                        "chase_status": "BLIND_TIMEOUT",
+                    },
+                    "BLIND_TIMEOUT",
+                )
+
+            blast_tasks = [asyncio.create_task(blast_one(cw)) for cw in blind_batch]
+            await self._wait_until(stage_start, "BLIND ARMED")
+            if blast_tasks:
+                await asyncio.gather(*blast_tasks)
+
+        async def on_opensea_snipe(
+            stage_start: int,
+            launch_report: InspectReport,
+            stage: dict[str, Any],
+        ) -> None:
+            nonlocal analysis
+            if not self.opensea or not self.opensea.slug:
+                return
+            lead = float(schedule.opensea_snipe_lead_sec)
+            if lead <= 0:
+                return
+            snipe_batch: list[ChaseWallet] = []
+            stage_key = stage_group_key(stage)
+            for cw in ctx.active_wallets:
+                if cw.done:
+                    continue
+                stg = ctx.current_stage(cw)
+                if not stg or stage_group_key(stg) != stage_key:
+                    continue
+                st, _ = stage_bounds(stg)
+                if st != stage_start:
+                    continue
+                if use_chain_public_mint(stg):
+                    continue
+                snipe_batch.append(cw)
+            if not snipe_batch:
+                return
+            warm_at = stage_start - lead
+            if time.time() < warm_at:
+                await self._wait_until(warm_at, "SNIPE PRE-ARM")
+            deadline = stage_start + float(schedule.opensea_snipe_stop_after_start_sec)
+            mint_gap = max(0.02, float(schedule.opensea_snipe_mint_interval_sec))
+            label = (stage.get("label") or stage.get("stage_type") or "stage").strip()
+            self.log(
+                f"[SNIPE] stage [{label}] PRE-ARM+hammer from T-{lead:g}s "
+                f"wallets={len(snipe_batch)} gas_limit={OPENSEA_SNIPE_GAS_LIMIT}"
+            )
+
+            async def snipe_one(cw: ChaseWallet) -> None:
+                nonlocal analysis
+                if cw.done:
+                    return
+                rpc_url = url_map.get(cw.address.lower())
+                qty_err = self._quantity_error_for_stage(stage, self.config.mint.quantity)
+                if qty_err:
+                    cw.finish(
+                        {
+                            "wallet": cw.label,
+                            "address": cw.address,
+                            "status": "SKIP",
+                            "error": qty_err,
+                            "chase_status": "WALLET_LIMIT",
+                        },
+                        "WALLET_LIMIT",
+                    )
+                    return
+                while time.time() < deadline:
+                    if self._user_cancelled():
+                        cw.finish(self._skip_cancelled(launch_report, cw.wallet), "CANCELLED")
+                        return
+                    if stop.is_set() and self.config.wallets.stop_on_sold_out:
+                        cw.finish(
+                            self._skip_unsent(launch_report, cw.wallet, "sold out, not sent"),
+                            "skipped",
+                        )
+                        return
+                    if analysis is None:
+                        analysis = await self._analyze()
+                    chain_sale = analysis.get("sale")
+                    meta = (analysis or {}).get("meta") or {}
+                    stage_report = self._report_for_stage(
+                        launch_report,
+                        stage,
+                        chain_sale,
+                        meta,
+                        int(time.time()),
+                    )
+                    quote = await quote_gas(
+                        self.pool,
+                        self.config.gas,
+                        fallback_limit=OPENSEA_SNIPE_GAS_LIMIT,
+                        attempt=0,
+                    )
+                    nonce = await self.pool.get_nonce(cw.wallet.address, "pending", prefer=rpc_url)
+                    plan: TxPlan | None = None
+                    while time.time() < deadline and plan is None:
+                        if self._user_cancelled():
+                            cw.finish(self._skip_cancelled(stage_report, cw.wallet), "CANCELLED")
+                            return
+                        try:
+                            probe = await self._probe_opensea_mint(cw.address)
+                        except PriceGuardError as exc:
+                            cw.finish(
+                                {
+                                    "wallet": cw.label,
+                                    "address": cw.address,
+                                    "status": "ERROR",
+                                    "error": exc.message,
+                                    "chase_status": "PRICE_GUARD",
+                                },
+                                "PRICE_GUARD",
+                            )
+                            return
+                        except EngineError as exc:
+                            self.log(f"[SNIPE] {cw.label} /mint error: {exc.message}")
+                            await asyncio.sleep(mint_gap)
+                            continue
+                        if probe.ok is True and probe.plan is not None:
+                            plan = probe.plan
+                            break
+                        if probe.ok is False:
+                            if int(time.time()) < stage_start:
+                                await asyncio.sleep(mint_gap)
+                                continue
+                            await self._on_opensea_not_eligible(
+                                cw,
+                                stage,
+                                label,
+                                probe,
+                                ctx,
+                                launch_report,
+                                skip_no_eligible,
+                                note_sold_out,
+                                in_hot_window=True,
+                            )
+                            if cw.done:
+                                return
+                            break
+                        await asyncio.sleep(mint_gap)
+                    if plan is None:
+                        if cw.done:
+                            return
+                        continue
+                    try:
+                        prepared = self._prepare_opensea_snipe_fire(
+                            stage_report,
+                            cw.wallet,
+                            plan,
+                            quote,
+                            nonce,
+                            rpc_url=rpc_url,
+                        )
+                    except PriceGuardError as exc:
+                        cw.finish(
+                            {
+                                "wallet": cw.label,
+                                "address": cw.address,
+                                "status": "ERROR",
+                                "error": exc.message,
+                                "chase_status": "PRICE_GUARD",
+                            },
+                            "PRICE_GUARD",
+                        )
+                        return
+                    last = await self._send_prepared(
+                        stage_report,
+                        prepared,
+                        stop=stop,
+                        receipt_timeout_sec=OPENSEA_SNIPE_RECEIPT_TIMEOUT_SEC,
+                    )
+                    if last.get("status") == "SUCCESS":
+                        self.log(f"[SNIPE] {cw.label} SUCCESS tx={last.get('tx_hash')}")
+                        cw.finish(last, "SUCCESS")
+                        return
+                    if last.get("sold_out"):
+                        note_sold_out(cw.address, str(last.get("error") or "sold out"))
+                        cw.finish(last, str(last.get("status") or "SOLD_OUT"))
+                        return
+                    self.log(
+                        f"[SNIPE] {cw.label} {last.get('status')} "
+                        f"{last.get('error') or ''} -> RE-ARM"
+                    )
+                    await asyncio.sleep(mint_gap)
+                cw.finish(
+                    {
+                        "wallet": cw.label,
+                        "address": cw.address,
+                        "status": "TIMEOUT",
+                        "error": "OpenSea snipe deadline",
+                        "chase_status": "SNIPE_TIMEOUT",
+                    },
+                    "SNIPE_TIMEOUT",
+                )
+
+            await asyncio.gather(*(snipe_one(cw) for cw in snipe_batch))
+
+        async def on_before_stage_armed(stage_start: int, launch_report: InspectReport) -> None:
+            stage_ref: dict[str, Any] | None = None
+            for cw in ctx.active_wallets:
+                if cw.done:
+                    continue
+                stg = ctx.current_stage(cw)
+                if not stg:
+                    continue
+                st, _ = stage_bounds(stg)
+                if st == stage_start:
+                    stage_ref = stg
+                    break
+            if stage_ref is None:
+                return
+            if use_chain_public_mint(stage_ref):
+                if schedule.public_blind_enabled:
+                    await on_public_blind(stage_start, launch_report)
+                else:
+                    await on_public_presign(stage_start, launch_report)
+            else:
+                await on_opensea_snipe(stage_start, launch_report, stage_ref)
+
         async def maybe_sync_stages(*, force: bool = False, hot: bool = False) -> None:
             nonlocal last_stage_sync_at
             if hot:
@@ -520,7 +921,7 @@ class MintController:
                     next_wake,
                     report,
                     on_after_prepare=on_prepare_hot,
-                    on_before_armed=on_public_presign,
+                    on_before_armed=on_before_stage_armed,
                     skip_armed_refresh=schedule.hot_path_enabled,
                 )
                 # FINAL refresh inside wait updates report; PREPARE analysis may be stale.
@@ -638,8 +1039,10 @@ class MintController:
 
                         opensea_plan: TxPlan | None = None
                         if use_chain_public_mint(stage):
+                            if schedule.public_blind_enabled and chase_wallet.done:
+                                return
                             prepared = chase_wallet.presigned
-                            if prepared is not None:
+                            if prepared is not None and not schedule.public_blind_enabled:
                                 start_bound, _ = stage_bounds(stage)
                                 if start_bound and time.time() < start_bound:
                                     await self._wait_until(start_bound, "PUBLIC OPEN")
@@ -897,6 +1300,66 @@ class MintController:
                 continue
             results.append(item)
         return results
+
+    def _prepare_opensea_snipe_fire(
+        self,
+        report: InspectReport,
+        wallet,
+        opensea_plan: TxPlan,
+        quote: dict[str, int],
+        nonce: int,
+        *,
+        rpc_url: str | None = None,
+    ) -> dict[str, Any]:
+        plan = opensea_plan.model_copy(deep=True)
+        self._enforce_price_guard_on_plan(plan)
+        plan.nonce = nonce
+        plan.gas = OPENSEA_SNIPE_GAS_LIMIT
+        plan.max_fee_per_gas = int(quote["max_fee"])
+        plan.max_priority_fee_per_gas = int(quote["priority_fee"])
+        raw, tx_hash = sign_tx(plan, wallet.private_key)
+        local_quote = dict(quote)
+        local_quote["gas_limit"] = OPENSEA_SNIPE_GAS_LIMIT
+        node = short_rpc_url(rpc_url or self.pool.primary_url or "")
+        self.log(
+            f"[SNIPE SIGNED] {wallet.label} nonce={nonce} rpc={node} "
+            f"gas={plan.gas} tip={plan.max_priority_fee_per_gas} tx={tx_hash}"
+        )
+        return {
+            "wallet": wallet,
+            "plan": plan,
+            "raw": raw,
+            "tx_hash": tx_hash,
+            "quote": local_quote,
+            "rpc_url": rpc_url,
+        }
+
+    async def _public_blind_gas_limit_once(
+        self,
+        report: InspectReport,
+        wallet,
+        rpc_url: str | None,
+    ) -> int:
+        fallback = self.config.gas.fallback_gas_limit or 280000
+        try:
+            plan = await self._build_mint_plan(report, wallet.address)
+        except Exception:
+            return fallback
+        tx = {
+            "from": plan.from_address,
+            "to": plan.to,
+            "data": plan.data,
+            "value": hex(plan.value),
+        }
+        try:
+            estimated = await self.pool.estimate_gas(tx, prefer=rpc_url)
+            return max(int(estimated) * 2, 21_000)
+        except Exception as exc:
+            blob = revert_blob(exc)
+            if is_sold_out(blob) and self.config.wallets.stop_on_sold_out:
+                raise _SoldOut(blob) from exc
+            self.log(f"[BLIND] estimateGas failed, use fallback_gas_limit={fallback}")
+            return fallback
 
     async def _wait_stage_schedule(
         self,
@@ -1188,6 +1651,7 @@ class MintController:
         rpc_url: str | None = None,
         *,
         opensea_plan: TxPlan | None = None,
+        fixed_gas_limit: int | None = None,
     ) -> dict[str, Any]:
         if opensea_plan is not None:
             plan = opensea_plan
@@ -1203,7 +1667,9 @@ class MintController:
             "value": hex(plan.value),
         }
         fallback = self.config.gas.fallback_gas_limit or 280000
-        if self.config.gas.gas_limit_mode == "fallback":
+        if fixed_gas_limit is not None and fixed_gas_limit > 0:
+            gas_limit, source = int(fixed_gas_limit), "blind fixed (estimate x2 once)"
+        elif self.config.gas.gas_limit_mode == "fallback":
             gas_limit, source = fallback, "forced fallback"
         else:
             try:
@@ -1313,6 +1779,8 @@ class MintController:
         report: InspectReport,
         prepared: dict[str, Any],
         stop: asyncio.Event | None = None,
+        *,
+        receipt_timeout_sec: float | None = None,
     ) -> dict[str, Any]:
         wallet = prepared["wallet"]
         if self._user_cancelled():
@@ -1359,9 +1827,14 @@ class MintController:
                 "cancelled": True,
                 "error": None,
             }
+        wait_sec = (
+            float(receipt_timeout_sec)
+            if receipt_timeout_sec is not None
+            else float(self.config.gas.receipt_timeout_sec)
+        )
         receipt = await self.pool.wait_receipt(
             prepared["tx_hash"],
-            timeout=self.config.gas.receipt_timeout_sec,
+            timeout=wait_sec,
             prefer=sent_url,
         )
         if receipt is None:

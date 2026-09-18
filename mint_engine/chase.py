@@ -42,6 +42,7 @@ class ChaseWallet:
 class ChaseContext:
     sequence: list[dict[str, Any]] = field(default_factory=list)
     wallets: list[ChaseWallet] = field(default_factory=list)
+    blind_gas_limit: int | None = None
 
     @property
     def active_wallets(self) -> list[ChaseWallet]:
@@ -52,6 +53,7 @@ class ChaseContext:
         wallet.presigned = None
         wallet.opensea_probe_cached = None
         wallet.opensea_probe_cached_at = 0.0
+        self.blind_gas_limit = None
         wallet.stage_index += 1
         if wallet.stage_index >= len(self.sequence):
             return False

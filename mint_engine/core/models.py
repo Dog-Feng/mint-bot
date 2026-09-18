@@ -129,6 +129,12 @@ class ScheduleConfig(BaseModel):
     opensea_plan_ttl_sec: float = 30.0
     public_presign_enabled: bool = True
     public_presign_lead_sec: float = 1.0
+    public_blind_enabled: bool = False
+    public_blind_warm_sec: float = 2.0
+    public_blind_fire_sec: float = 1.0
+    public_blind_retry_interval_sec: float = 0.1
+    public_blind_max_attempts: int = 0
+    public_blind_stop_after_start_sec: float = 30.0
     public_not_started_probe_sec: float = 0.1
     opensea_connect_timeout_sec: float = 2.0
     opensea_read_timeout_sec: float = 10.0
@@ -136,6 +142,9 @@ class ScheduleConfig(BaseModel):
     opensea_hot_inactive_probe_sec: float = 0.25
     opensea_hot_eligibility_retry_interval_sec: float = 0.5
     opensea_hot_stage_sync_sec: float = 60.0
+    opensea_snipe_lead_sec: float = 2.0
+    opensea_snipe_mint_interval_sec: float = 0.1
+    opensea_snipe_stop_after_start_sec: float = 30.0
 
 
 class SafetyConfig(BaseModel):
