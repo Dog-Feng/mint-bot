@@ -21,6 +21,7 @@ class ChaseWallet:
     chase_status: str = "pending"
     last_probe_at: float = 0.0
     presigned: dict[str, Any] | None = None
+    blind_prepared: list[dict[str, Any]] | None = None
     opensea_probe_cached: Any | None = None
     opensea_probe_cached_at: float = 0.0
 
@@ -51,6 +52,7 @@ class ChaseContext:
     def advance_stage(self, wallet: ChaseWallet) -> bool:
         """Move to next stage. Returns False if no more stages."""
         wallet.presigned = None
+        wallet.blind_prepared = None
         wallet.opensea_probe_cached = None
         wallet.opensea_probe_cached_at = 0.0
         self.blind_gas_limit = None

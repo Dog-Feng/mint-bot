@@ -130,11 +130,10 @@ class ScheduleConfig(BaseModel):
     public_presign_enabled: bool = True
     public_presign_lead_sec: float = 1.0
     public_blind_enabled: bool = False
-    public_blind_warm_sec: float = 2.0
-    public_blind_fire_sec: float = 1.0
-    public_blind_retry_interval_sec: float = 0.1
-    public_blind_max_attempts: int = 0
-    public_blind_stop_after_start_sec: float = 30.0
+    public_blind_prearm_lead_sec: float = 2.0
+    public_blind_blast_lead_sec: float = 0.5
+    public_blind_nonce_count: int = Field(default=3, ge=1, le=20)
+    public_blind_send_gap_sec: float = 0.0
     public_not_started_probe_sec: float = 0.1
     opensea_connect_timeout_sec: float = 2.0
     opensea_read_timeout_sec: float = 10.0

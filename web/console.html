@@ -494,9 +494,32 @@
               <label>公开轮策略</label>
               <select id="publicBlindEnabled">
                 <option value="false" selected>预签（T−1s estimate+签，到点 probe 后发）</option>
-                <option value="true">盲打（开抢前连发，不做 eth_call 探针）</option>
+                <option value="true">盲打（T−2 预签 K 笔 nonce，T−0.5 起各发 1 次）</option>
               </select>
-              <div class="hint">仅 <code>public_sale</code> 阶段生效；与预签互斥。WL/GTD 仍走 OpenSea Snipe。</div>
+              <div class="hint">仅 <code>public_sale</code> 阶段；盲打与预签互斥。WL/GTD 仍走 OpenSea Snipe。</div>
+            </div>
+          </div>
+          <div class="row hidden" id="publicBlindOptions">
+            <div class="row four">
+              <div>
+                <label>PRE-ARM 提前 (秒)</label>
+                <input id="publicBlindPrearmLead" type="number" step="0.1" min="0.1" value="2" />
+                <div class="hint">相对开抢 T−N，estimate×2 + 签 K 笔</div>
+              </div>
+              <div>
+                <label>广播开始提前 (秒)</label>
+                <input id="publicBlindBlastLead" type="number" step="0.1" min="0.1" value="0.5" />
+                <div class="hint">相对开抢 T−N，每 nonce 各 broadcast 1 次</div>
+              </div>
+              <div>
+                <label>每钱包 nonce 数 K</label>
+                <input id="publicBlindNonceCount" type="number" min="1" max="20" step="1" value="3" />
+              </div>
+              <div>
+                <label>同钱包 send 间隔 (秒)</label>
+                <input id="publicBlindSendGap" type="number" step="0.01" min="0" value="0" />
+                <div class="hint">0=尽快；受 RPC 延迟限制</div>
+              </div>
             </div>
           </div>
           <div class="row hidden" id="recipientRow">
@@ -1106,9 +1129,20 @@
           extra_params: extra,
         },
         gas: currentGasConfig(),
-        schedule: {
-          public_blind_enabled: $("publicBlindEnabled").value === "true",
-        },
+        schedule: (() => {
+          const blind = $("publicBlindEnabled").value === "true";
+          const sched = {
+            public_blind_enabled: blind,
+            public_presign_enabled: !blind,
+          };
+          if (blind) {
+            sched.public_blind_prearm_lead_sec = Number($("publicBlindPrearmLead").value || 2);
+            sched.public_blind_blast_lead_sec = Number($("publicBlindBlastLead").value || 0.5);
+            sched.public_blind_nonce_count = Number($("publicBlindNonceCount").value || 3);
+            sched.public_blind_send_gap_sec = Number($("publicBlindSendGap").value || 0);
+          }
+          return sched;
+        })(),
       };
     }
 
@@ -1696,6 +1730,14 @@
     $("recipientMode").addEventListener("change", () => {
       $("recipientRow").classList.toggle("hidden", $("recipientMode").value !== "custom");
     });
+    function syncPublicBlindOptions() {
+      $("publicBlindOptions").classList.toggle(
+        "hidden",
+        $("publicBlindEnabled").value !== "true",
+      );
+    }
+    $("publicBlindEnabled").addEventListener("change", syncPublicBlindOptions);
+    syncPublicBlindOptions();
     function syncSweepRunButton() {
       $("btnSweepRun").disabled = !state.sweepPreviewed || state.sweeping || !normalizeAddress($("sweepDest").value);
     }
